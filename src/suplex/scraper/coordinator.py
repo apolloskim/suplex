@@ -77,6 +77,35 @@ class ScrapeCoordinator:
                 elif self._scraper == "apify":
                     for t in tiles:
                         t.extra["tile_scraper"] = "apify"
+
+                # Filter tiles by --only / --exclude state flags.
+                only_states = target.extra.get("only_states")
+                exclude_states = target.extra.get("exclude_states")
+                if only_states or exclude_states:
+                    from suplex.geo.tiles import STATE_CODES
+                    # Build full state name set for matching LinkedIn autocomplete strings.
+                    _code_to_name = {v: k.title() for k, v in STATE_CODES.items() if len(k) > 2}
+
+                    def _tile_matches_state(tile: ScrapeTarget, state_codes: list[str]) -> bool:
+                        # Google Maps tiles have tile_state.
+                        ts = tile.extra.get("tile_state", "").upper()
+                        if ts and ts in state_codes:
+                            return True
+                        # LinkedIn tiles: check if location string contains the state name.
+                        loc = tile.location.lower() if tile.location else ""
+                        for code in state_codes:
+                            name = _code_to_name.get(code, "").lower()
+                            if name and name in loc:
+                                return True
+                            if f", {code.lower()}" in loc:
+                                return True
+                        return False
+
+                    if only_states:
+                        tiles = [t for t in tiles if _tile_matches_state(t, only_states)]
+                    if exclude_states:
+                        tiles = [t for t in tiles if not _tile_matches_state(t, exclude_states)]
+
                 expanded.extend(tiles)
             else:
                 expanded.append(target)

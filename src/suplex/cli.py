@@ -269,9 +269,11 @@ def scrape() -> None:
 @click.option("--max-results", "-n", default=0, help="Max results per tile (0=exhaust)")
 @click.option("--scraper", "-s", type=click.Choice(["auto", "playwright", "apify"]), default="auto", help="Force scraper: playwright (free) or apify (paid)")
 @click.option("--reviews", "-r", default=5, help="Reviews per place (0=skip)")
+@click.option("--only", default=None, help="Only include these states (comma-separated, e.g. CA,TX,NY)")
+@click.option("--exclude", default=None, help="Exclude these states (comma-separated, e.g. WY,VT)")
 @click.option("--enrich/--no-enrich", default=True, help="Auto-enrich after scraping (default: yes)")
 @click.option("--apify-token", envvar="APIFY_TOKEN", default=None)
-def scrape_maps(query: str, location: str | None, max_results: int, scraper: str, reviews: int, enrich: bool, apify_token: str | None) -> None:
+def scrape_maps(query: str, location: str | None, max_results: int, scraper: str, reviews: int, only: str | None, exclude: str | None, enrich: bool, apify_token: str | None) -> None:
     """Scrape Google Maps for business leads."""
     from suplex.config import Config
     from suplex.scraper.coordinator import ScrapeCoordinator
@@ -279,11 +281,17 @@ def scrape_maps(query: str, location: str | None, max_results: int, scraper: str
     token = apify_token or Config.load().apify_token
     store = LeadStore()
     coord = ScrapeCoordinator(store=store, apify_token=token, scraper=scraper, reviews_per_place=reviews)
+    extra: dict = {}
+    if only:
+        extra["only_states"] = [s.strip().upper() for s in only.split(",")]
+    if exclude:
+        extra["exclude_states"] = [s.strip().upper() for s in exclude.split(",")]
     target = ScrapeTarget(
         source=LeadSource.GOOGLE_MAPS,
         query=query,
         location=location,
         max_results=max_results,
+        extra=extra,
     )
     job_id = os.environ.get("SUPLEX_JOB_ID")
     leads = asyncio.run(coord.run([target], job_id=job_id))
@@ -302,11 +310,14 @@ def scrape_maps(query: str, location: str | None, max_results: int, scraper: str
 @click.option("--industries", default=None, help="Industry IDs (comma-separated)")
 @click.option("--mode", "-m", type=click.Choice(["short", "full", "full_with_email"]), default="full_with_email")
 @click.option("--max-results", "-n", default=0, help="Max results (0 = exhaust)")
+@click.option("--only", default=None, help="Only include these states (comma-separated)")
+@click.option("--exclude", default=None, help="Exclude these states (comma-separated)")
 @click.option("--enrich/--no-enrich", default=True, help="Auto-enrich after scraping (default: yes)")
 @click.option("--apify-token", envvar="APIFY_TOKEN", default=None)
 def scrape_linkedin(
     query: str, location: str | None, titles: str | None, companies: str | None,
-    industries: str | None, mode: str, max_results: int, enrich: bool, apify_token: str | None,
+    industries: str | None, mode: str, max_results: int, only: str | None, exclude: str | None,
+    enrich: bool, apify_token: str | None,
 ) -> None:
     """Scrape LinkedIn for people leads."""
     from suplex.config import Config
@@ -323,6 +334,10 @@ def scrape_linkedin(
         extra["current_companies"] = [c.strip() for c in companies.split(",")]
     if industries:
         extra["industries"] = [i.strip() for i in industries.split(",")]
+    if only:
+        extra["only_states"] = [s.strip().upper() for s in only.split(",")]
+    if exclude:
+        extra["exclude_states"] = [s.strip().upper() for s in exclude.split(",")]
 
     target = ScrapeTarget(
         source=LeadSource.LINKEDIN,
