@@ -133,6 +133,7 @@ def _resolve_cities(location_lower: str, store: LeadStore) -> list[dict] | None:
         return cities if cities else None
 
     # Foreign region? (province, prefecture, etc.)
+    # Try exact match (with accent normalization).
     target = _normalize_accent(location_lower)
     for country in store.get_all_countries():
         cc = country["country_code"]
@@ -141,6 +142,68 @@ def _resolve_cities(location_lower: str, store: LeadStore) -> list[dict] | None:
                 cities = store.get_cities(region, country_code=cc)
                 if cities:
                     return cities
+
+    # Fuzzy region match: search autocomplete suggestions for the location string.
+    # E.g., "North Holland" → find cities whose autocomplete contains "North Holland"
+    # → infer those cities are in that region.
+    matched_cities = _resolve_region_via_autocomplete(location_lower, store)
+    if matched_cities:
+        return matched_cities
+
+    return None
+
+
+def _resolve_region_via_autocomplete(location_lower: str, store: LeadStore) -> list[dict] | None:
+    """Find cities whose LinkedIn autocomplete suggestions contain the location string.
+
+    Searches the linkedin_locations table directly via SQL LIKE — fast, no full scan.
+    E.g., "North Holland" → finds entries like "Amsterdam, North Holland, Netherlands"
+    → infers Amsterdam is in the target region → returns all such cities.
+    """
+    import json as _json
+
+    with store._conn() as conn:
+        rows = conn.execute(
+            "SELECT query, suggestions FROM linkedin_locations WHERE suggestions LIKE ?",
+            (f"%{location_lower}%",),
+        ).fetchall()
+
+    if not rows:
+        return None
+
+    # Extract city names from matching autocomplete entries.
+    city_names: set[str] = set()
+    for row in rows:
+        city_names.add(row["query"])
+
+    if not city_names:
+        return None
+
+    # Find what country these cities are in — check the first matched city.
+    # All should be in the same country for a region query.
+    matched_cities: list[dict] = []
+    country_code: str | None = None
+
+    for cn in city_names:
+        # Look up the city in our cities table.
+        # Try all countries since we don't know which one yet.
+        with store._conn() as conn:
+            city_rows = conn.execute(
+                "SELECT name, state, country_code, lat, lng, population FROM cities WHERE name = ?",
+                (cn,),
+            ).fetchall()
+            for cr in city_rows:
+                if country_code is None:
+                    country_code = cr["country_code"]
+                if cr["country_code"] == country_code:
+                    matched_cities.append(dict(cr))
+
+    if matched_cities:
+        logger.info(
+            "Resolved '%s' via autocomplete → %d cities in %s",
+            location_lower, len(matched_cities), country_code,
+        )
+        return matched_cities
 
     return None
 
@@ -263,10 +326,10 @@ def _linkedin_tiles(
         # Country-level: must contain the country name.
         if target_country_names and any(cn in s_lower for cn in target_country_names):
             return True
-        # Metro patterns: "Greater {city}", "{city} Area" — only if it looks like a metro.
+        # Metro patterns: city name appears in a metro/area string.
         cn = city_name.lower()
         is_metro = "area" in s_lower or "metropolitan" in s_lower
-        if is_metro and (s_lower.startswith(cn) or s_lower.startswith(f"greater {cn}")):
+        if is_metro and cn in s_lower:
             return True
         return False
 
