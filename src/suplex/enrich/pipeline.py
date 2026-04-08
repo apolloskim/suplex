@@ -170,7 +170,7 @@ class EnrichmentPipeline:
         run = await client.actor("harvestapi/linkedin-profile-posts").call(
             run_input={
                 "profileUrls": [linkedin_url],
-                "limitPerProfile": self.linkedin_posts,
+                "maxItems": self.linkedin_posts,
             },
         )
         dataset_id = run["defaultDatasetId"]
@@ -178,12 +178,14 @@ class EnrichmentPipeline:
 
         posts = []
         for item in items_page.items:
+            text = item.get("content") or item.get("text") or item.get("commentary") or ""
             posts.append({
-                "text": (item.get("text") or item.get("commentary") or "")[:500],
-                "url": item.get("url") or item.get("postUrl", ""),
+                "text": text[:500],
+                "url": item.get("linkedinUrl") or item.get("url") or item.get("postUrl", ""),
                 "date": item.get("postedAtISO") or item.get("postedDate", ""),
                 "likes": item.get("numLikes") or item.get("likesCount", 0),
                 "comments": item.get("numComments") or item.get("commentsCount", 0),
+                "author": item.get("author", {}).get("name", ""),
             })
 
         return posts
