@@ -1,99 +1,73 @@
-# Suplex — Agent-Driven Lead Scraping & Verification
+# Suplex
 
-You are interacting with **Suplex**, a CLI + MCP tool for autonomous lead generation.
+Agent-driven lead scraping, enrichment, and email verification CLI + MCP tool.
 
-## What it does
-
-- **Scrapes** leads from Google Maps (via Apify), LinkedIn (via Apify), and websites (via Playwright)
-- **Verifies** emails via SMTP handshake (Reacher Docker, free) + catch-all detection (MillionVerifier)
-- **Plans** scrape strategies using AI (Claude) — you describe the business, AI decides what to scrape
-- **Schedules** recurring autonomous scrape runs via cron
-
-## Quick start
+## Commands
 
 ```bash
 # Install
-cd /Users/soyeonjo/apollos/suplex
-uv sync
-uv run playwright install chromium
+uv sync && uv run playwright install chromium
 
-# Setup (interactive — configures API keys + Reacher Docker)
-uv run suplex setup
+# First-time setup
+uv run suplex setup          # configure API keys (interactive)
+uv run suplex profile <url>  # set sender profile from your website
+uv run suplex doctor         # verify all services healthy
 
-# Check health
-uv run suplex doctor
-```
-
-## CLI commands
-
-```bash
-# AI-plan what to scrape, then execute it
-uv run suplex plan "B2B SaaS for restaurants" --execute
-
-# Scrape specific sources
-uv run suplex scrape maps "pizza shops" -l "Austin TX" -n 50
-uv run suplex scrape linkedin "CTO SaaS" -l "San Francisco" -n 25
+# Scrape
+uv run suplex scrape maps "query" -l "location" -s playwright|apify
+uv run suplex scrape linkedin "query" -l "location" -t "titles"
 uv run suplex scrape website https://example.com
 
-# Verify emails in the database
-uv run suplex verify -n 100
+# Enrich (runs on all unenriched leads)
+uv run suplex enrich --linkedin-posts 1
 
-# View results
+# Background jobs
+uv run suplex run scrape-maps "query" -l "location"
+uv run suplex run scrape-linkedin "query" -l "location"
+uv run suplex run enrich
+uv run suplex jobs                    # list all jobs
+uv run suplex job <id>                # check progress
+
+# Query
 uv run suplex leads --source google_maps --status valid
 uv run suplex stats
+uv run suplex verify -n 50
 
-# Schedule recurring runs
-uv run suplex schedule "B2B SaaS for restaurants" -c "0 9 * * 1"
-
-# Start MCP server (for agent tool discovery)
+# MCP server
 uv run suplex serve
 ```
 
-## MCP tools (when running as MCP server)
+## Code Style
 
-| Tool | Description |
-|------|-------------|
-| `setup_status` | Check API keys + sender profile status. **Call this first.** |
-| `configure` | Set and validate an API key |
-| `ensure_reacher` | Auto-start Reacher Docker for email verification |
-| `set_profile` | Scrape user's website to create sender profile |
-| `get_profile` | Get current sender profile |
-| `plan_scrape` | AI generates a scrape plan from business domain + preferences |
-| `run_scrape_plan` | Plan + execute in one step |
-| `scrape_google_maps` | Scrape Google Maps (Playwright or Apify) |
-| `scrape_linkedin` | Scrape LinkedIn via Apify with autocomplete tiling |
-| `scrape_website` | Scrape a website for rich business data |
-| `enrich_leads` | Enrich unenriched leads: site scrape + email verify + email guess + LinkedIn posts |
-| `verify_emails` | Verify unverified emails via Reacher (auto Docker) |
-| `run_background_job` | Launch scrape/enrich in background, returns job_id |
-| `get_job_status` | Check progress of a background job |
-| `list_jobs` | List recent background jobs |
-| `get_leads` | Query leads with filters |
-| `get_stats` | Lead count statistics |
+- Python 3.12+, type hints required
+- Async-first: use `asyncio` / `anyio` for all I/O
+- `uv` for package management, never `pip`
+- `ruff` for linting
+- Tests: `uv run pytest`, not `uv test`
 
-## Required API keys
+## Boundaries
 
-| Key | Service | Free tier | Get it at |
-|-----|---------|-----------|-----------|
-| `apify_token` | Apify (Google Maps + LinkedIn) | $5/month | https://console.apify.com/account/integrations |
-| `anthropic_api_key` | Claude (AI strategist) | Pay-as-you-go | https://console.anthropic.com/settings/keys |
+- NEVER commit API keys or tokens
+- NEVER modify `src/suplex/geo/us-cities.json` or `worldcities.csv` manually
+- NEVER modify the SQLite schema without adding migration logic for existing DBs
+- All scraper output goes through `LeadStore.insert_lead()` for dedup
+- Background jobs MUST pass `SUPLEX_JOB_ID` env var for progress tracking
 
-## Optional
+## Data Model
 
-| Key | Service | Notes |
-|-----|---------|-------|
-| `reacher_api_key` | Reacher hosted API | Paid. Prefer Docker instead (free). |
-| `million_verifier_api_key` | MillionVerifier | Catch-all detection. Optional. |
+- **leads** table: all scraped contacts (Google Maps + LinkedIn + website)
+- **sender_profile** table: user's own business identity (single row)
+- **jobs** table: background job tracking with parent/child batches
+- **item_tasks** table: per-tile crash recovery
+- **cities** table: 59K cities across 241 countries for geo tiling
+- **linkedin_locations** table: 17K cached autocomplete strings
+- **linkedin_geo_map** table: 316K lookup keys for tile resolution
 
-## Email verification
+## Key Architecture Decisions
 
-Reacher runs as a free Docker container. Suplex auto-starts it when needed.
-If Docker is not installed, ask the user to install Docker Desktop.
-
-## Config
-
-Stored at `~/.config/suplex/config.toml`. Set via `suplex setup` or the `configure` MCP tool.
-
-## Data
-
-SQLite database at `~/.config/suplex/suplex.db`. Query via `suplex leads` or `get_leads` MCP tool.
+- Scraping and enrichment are decoupled. Scrape first, enrich later.
+- Google Maps: Playwright (free, coordinate-based viewport search) or Apify (paid, polygon-based). Agent chooses.
+- LinkedIn: Apify only. One actor run per autocomplete string. No tiling overlap.
+- Email verification: Reacher Docker (auto-installed, free SMTP handshake).
+- Site scraping: httpx + selectolax + trafilatura (fast) with Playwright fallback for JS shells.
+- The agent IS the AI layer. Suplex returns clean_text; the agent interprets it. No embedded LLM calls.
