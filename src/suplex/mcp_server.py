@@ -360,6 +360,67 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="run_batch_job",
+            description=(
+                "Launch multiple scrape/enrich jobs as a batch. The agent decomposes "
+                "a complex request (e.g., 'scrape dental hygienists, dentist owners, "
+                "pediatric dentists across LinkedIn and Google Maps') into individual "
+                "jobs. Returns a batch_id for tracking. Use get_batch_status to monitor."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "jobs": {
+                        "type": "array",
+                        "description": "List of job specs to run",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "type": {"type": "string", "enum": ["scrape_maps", "scrape_linkedin", "enrich"]},
+                                "query": {"type": "string"},
+                                "location": {"type": "string"},
+                                "scraper": {"type": "string", "enum": ["auto", "playwright", "apify"]},
+                                "titles": {"type": "string"},
+                            },
+                            "required": ["type"],
+                        },
+                    },
+                    "max_parallel": {
+                        "type": "integer",
+                        "description": "Max jobs running at once",
+                        "default": 3,
+                    },
+                },
+                "required": ["jobs"],
+            },
+        ),
+        Tool(
+            name="get_batch_status",
+            description="Check progress of a batch job. Shows each child job's status and total leads.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "batch_id": {"type": "string", "description": "Batch ID from run_batch_job"},
+                },
+                "required": ["batch_id"],
+            },
+        ),
+        Tool(
+            name="advance_batch",
+            description=(
+                "Check a batch and launch next pending jobs if slots are open. "
+                "Call this periodically to keep the batch moving."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "batch_id": {"type": "string"},
+                    "max_parallel": {"type": "integer", "default": 3},
+                },
+                "required": ["batch_id"],
+            },
+        ),
+        Tool(
             name="list_jobs",
             description="List recent background jobs with their status and progress.",
             inputSchema={
@@ -509,6 +570,18 @@ async def _dispatch(name: str, args: dict) -> dict:
             return launch_enrich_job(limit=args.get("limit", 100), linkedin_posts=args.get("linkedin_posts", 1))
         else:
             raise ValueError(f"Unknown job type: {job_type}")
+
+    elif name == "run_batch_job":
+        from suplex.jobs import launch_batch_job
+        return launch_batch_job(args["jobs"], max_parallel=args.get("max_parallel", 3))
+
+    elif name == "get_batch_status":
+        from suplex.jobs import get_batch_status as _get_batch
+        return _get_batch(args["batch_id"])
+
+    elif name == "advance_batch":
+        from suplex.jobs import advance_batch as _advance
+        return _advance(args["batch_id"], max_parallel=args.get("max_parallel", 3))
 
     elif name == "get_job_status":
         from suplex.jobs import get_job_status as _get_status

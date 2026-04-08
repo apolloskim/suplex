@@ -81,10 +81,12 @@ CREATE TABLE IF NOT EXISTS jobs (
     started_at TEXT,
     finished_at TEXT,
     error TEXT,
-    meta TEXT NOT NULL DEFAULT '{}'
+    meta TEXT NOT NULL DEFAULT '{}',
+    parent_id TEXT REFERENCES jobs(id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
+CREATE INDEX IF NOT EXISTS idx_jobs_parent ON jobs(parent_id);
 
 CREATE TABLE IF NOT EXISTS item_tasks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -534,6 +536,65 @@ class LeadStore:
                 d["meta"] = json.loads(d["meta"]) if d["meta"] else {}
                 results.append(d)
             return results
+
+    def create_batch_job(self, batch_id: str, child_specs: list[dict], meta: dict | None = None) -> None:
+        """Create a parent batch job with pending child jobs."""
+        now = datetime.utcnow().isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO jobs (id, type, status, total, started_at, meta) VALUES (?, 'batch', 'running', ?, ?, ?)",
+                (batch_id, len(child_specs), now, json.dumps(meta or {})),
+            )
+            for spec in child_specs:
+                conn.execute(
+                    "INSERT INTO jobs (id, type, status, total, started_at, meta, parent_id) VALUES (?, ?, 'pending', 0, ?, ?, ?)",
+                    (spec["job_id"], spec["type"], now, json.dumps(spec.get("meta", {})), batch_id),
+                )
+
+    def get_batch_status(self, batch_id: str) -> dict | None:
+        """Get aggregated status of a batch and its children."""
+        with self._conn() as conn:
+            parent = conn.execute("SELECT * FROM jobs WHERE id = ?", (batch_id,)).fetchone()
+            if not parent:
+                return None
+            children = conn.execute(
+                "SELECT * FROM jobs WHERE parent_id = ? ORDER BY started_at", (batch_id,)
+            ).fetchall()
+
+        child_list = []
+        for c in children:
+            d = dict(c)
+            d["meta"] = json.loads(d["meta"]) if d["meta"] else {}
+            child_list.append(d)
+
+        return {
+            "batch_id": batch_id,
+            "status": dict(parent)["status"],
+            "total_jobs": len(children),
+            "done": sum(1 for c in children if c["status"] == "done"),
+            "running": sum(1 for c in children if c["status"] == "running"),
+            "failed": sum(1 for c in children if c["status"] == "failed"),
+            "pending": sum(1 for c in children if c["status"] == "pending"),
+            "total_leads": sum(c["leads_count"] for c in children),
+            "children": child_list,
+        }
+
+    def get_pending_children(self, batch_id: str, limit: int = 1) -> list[dict]:
+        """Get next pending child jobs to launch."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM jobs WHERE parent_id = ? AND status = 'pending' LIMIT ?",
+                (batch_id, limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def count_running_children(self, batch_id: str) -> int:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM jobs WHERE parent_id = ? AND status = 'running'",
+                (batch_id,),
+            ).fetchone()
+            return row[0]
 
     # ------------------------------------------------------------------
     # Item tasks (resumable processing)

@@ -73,6 +73,102 @@ def launch_enrich_job(
     })
 
 
+def launch_batch_job(specs: list[dict], *, max_parallel: int = 3) -> dict:
+    """Launch a batch of scrape/enrich jobs with concurrency control.
+
+    Each spec: {"type": "scrape_maps"|"scrape_linkedin"|"enrich", "query": ..., "location": ..., ...}
+    """
+    batch_id = _gen_id()
+    store = LeadStore()
+
+    # Build child specs with job IDs.
+    child_specs = []
+    for spec in specs:
+        child_id = _gen_id()
+        child_specs.append({
+            "job_id": child_id,
+            "type": spec["type"],
+            "meta": spec,
+        })
+
+    store.create_batch_job(batch_id, child_specs, meta={"total_specs": len(specs)})
+
+    # Launch first N children.
+    launched = []
+    for child in child_specs[:max_parallel]:
+        _launch_child_job(child)
+        launched.append(child["job_id"])
+
+    logger.info("Batch %s: %d jobs, %d launched", batch_id, len(specs), len(launched))
+    return {
+        "batch_id": batch_id,
+        "total_jobs": len(specs),
+        "launched": len(launched),
+        "max_parallel": max_parallel,
+    }
+
+
+def advance_batch(batch_id: str, max_parallel: int = 3) -> dict:
+    """Check batch status and launch next pending children if slots are open."""
+    store = LeadStore()
+    status = store.get_batch_status(batch_id)
+    if not status:
+        return {"error": f"Batch {batch_id} not found"}
+
+    running = status["running"]
+    slots = max(0, max_parallel - running)
+    newly_launched = []
+
+    if slots > 0 and status["pending"] > 0:
+        pending = store.get_pending_children(batch_id, limit=slots)
+        for child in pending:
+            meta = json.loads(child["meta"]) if isinstance(child["meta"], str) else child["meta"]
+            _launch_child_job({"job_id": child["id"], "type": child["type"], "meta": meta})
+            newly_launched.append(child["id"])
+
+    # Check if batch is complete.
+    if status["done"] + status["failed"] == status["total_jobs"]:
+        store.finish_job(batch_id, "done" if status["failed"] == 0 else "done_with_errors")
+
+    return {**status, "newly_launched": len(newly_launched)}
+
+
+def get_batch_status(batch_id: str) -> dict:
+    """Get batch status with aggregated progress."""
+    store = LeadStore()
+    status = store.get_batch_status(batch_id)
+    if not status:
+        return {"error": f"Batch {batch_id} not found"}
+    return status
+
+
+def _launch_child_job(child: dict) -> None:
+    """Launch a single child job from a batch."""
+    meta = child.get("meta", {})
+    job_type = child["type"]
+    job_id = child["job_id"]
+
+    # Mark as running.
+    store = LeadStore()
+    store.create_job(job_id, job_type, total=0)
+
+    if job_type in ("scrape_maps", "scrape_linkedin"):
+        source = "maps" if job_type == "scrape_maps" else "linkedin"
+        query = meta.get("query", "")
+        location = meta.get("location", "")
+        extra = []
+        if meta.get("scraper"):
+            extra.extend(["-s", meta["scraper"]])
+        if meta.get("titles"):
+            extra.extend(["-t", meta["titles"]])
+        launch_scrape_job(source, query, location, extra_args=extra)
+    elif job_type == "enrich":
+        launch_enrich_job(
+            limit=meta.get("limit", 100),
+            linkedin_posts=meta.get("linkedin_posts", 1),
+        )
+
+
 def get_job_status(job_id: str) -> dict:
     """Get current status of a job from SQLite."""
     store = LeadStore()
