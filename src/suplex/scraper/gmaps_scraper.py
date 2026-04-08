@@ -142,7 +142,7 @@ class GMapsScraper:
                     if GMapsScraper._daily_count >= DAILY_LIMIT:
                         logger.warning("Daily limit reached mid-scrape (%d). Stopping.", DAILY_LIMIT)
                         break
-                    detail = await self._extract_place(page, place_url)
+                    detail = await self._extract_place(page, place_url, context=context)
                     if detail:
                         lead = self._to_lead(detail, query)
                         leads.append(lead)
@@ -238,8 +238,8 @@ class GMapsScraper:
         return list(seen_urls.keys())
 
     @staticmethod
-    async def _extract_place(page: Page, url: str) -> dict[str, Any] | None:
-        """Navigate to a place and extract its details."""
+    async def _extract_place(page: Page, url: str, context=None, max_reviews: int = 5) -> dict[str, Any] | None:
+        """Navigate to a place and extract its details + reviews."""
         await page.goto(url, wait_until="domcontentloaded", timeout=20_000)
         await page.wait_for_timeout(2000)
 
@@ -309,6 +309,22 @@ class GMapsScraper:
         place_match = re.search(r"place/[^/]+/[^/]*!8m2!3d[^!]+!4d[^!]+", url)
         if place_match:
             detail["maps_url"] = url
+
+        # Reviews via RPC API (if context available).
+        if context and max_reviews > 0:
+            try:
+                from suplex.scraper.review_scraper import scrape_reviews
+                review_data = await scrape_reviews(
+                    context, page, place_url=url, max_reviews=max_reviews,
+                )
+                if review_data.get("rating"):
+                    detail["rating"] = review_data["rating"]
+                if review_data.get("review_count"):
+                    detail["review_count"] = review_data["review_count"]
+                if review_data.get("reviews"):
+                    detail["reviews"] = review_data["reviews"]
+            except Exception:
+                logger.debug("Review scraping failed for %s", url, exc_info=True)
 
         return detail
 
