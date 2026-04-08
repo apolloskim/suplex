@@ -70,13 +70,13 @@ class ApifyScraper:
 
     async def _run_actor(self, actor_id: str, run_input: dict[str, Any]) -> list[dict[str, Any]]:
         """Run an Apify actor and wait for results."""
-        async with ApifyClientAsync(self.token) as client:
-            run = await client.actor(actor_id).call(run_input=run_input)
-            dataset_id = run["defaultDatasetId"]
-            items_page = await client.dataset(dataset_id).list_items()
-            items = items_page.items
-            logger.info("Apify actor %s returned %d items", actor_id, len(items))
-            return items
+        client = ApifyClientAsync(self.token)
+        run = await client.actor(actor_id).call(run_input=run_input)
+        dataset_id = run["defaultDatasetId"]
+        items_page = await client.dataset(dataset_id).list_items()
+        items = items_page.items
+        logger.info("Apify actor %s returned %d items", actor_id, len(items))
+        return items
 
     @staticmethod
     def _maps_item_to_lead(item: dict[str, Any]) -> Lead:

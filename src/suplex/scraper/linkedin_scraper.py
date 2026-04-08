@@ -200,13 +200,13 @@ class LinkedInScraper:
 
     async def _run_actor(self, run_input: dict[str, Any]) -> list[dict[str, Any]]:
         """Run the LinkedIn actor and collect all results."""
-        async with ApifyClientAsync(self.token) as client:
-            run = await client.actor(LINKEDIN_ACTOR).call(run_input=run_input)
-            dataset_id = run["defaultDatasetId"]
-            items_page = await client.dataset(dataset_id).list_items()
-            items = items_page.items
-            logger.info("LinkedIn actor returned %d profiles", len(items))
-            return items
+        client = ApifyClientAsync(self.token)
+        run = await client.actor(LINKEDIN_ACTOR).call(run_input=run_input)
+        dataset_id = run["defaultDatasetId"]
+        items_page = await client.dataset(dataset_id).list_items()
+        items = items_page.items
+        logger.info("LinkedIn actor returned %d profiles", len(items))
+        return items
 
     @staticmethod
     def _to_lead(item: dict[str, Any], query: str, location: str | None) -> Lead:
@@ -217,7 +217,11 @@ class LinkedInScraper:
 
         current_company = item.get("currentCompany") or item.get("companyName", "")
         current_title = item.get("currentPosition") or item.get("headline", "")
-        lead_location = item.get("location") or item.get("locationText", "")
+        raw_loc = item.get("location") or item.get("locationText", "")
+        if isinstance(raw_loc, dict):
+            lead_location = raw_loc.get("linkedinText", "") or raw_loc.get("default", "") or ""
+        else:
+            lead_location = raw_loc or ""
 
         public_id = item.get("publicIdentifier") or item.get("public_identifier", "")
         li_url = item.get("linkedinUrl") or item.get("linkedin_url", "")
