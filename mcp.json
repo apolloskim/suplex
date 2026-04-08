@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "suplex": {
+      "command": "uv",
+      "args": ["--directory", "/Users/soyeonjo/apollos/suplex", "run", "suplex", "serve"],
+      "env": {
+        "APIFY_TOKEN": "",
+        "ANTHROPIC_API_KEY": "",
+        "REACHER_URL": "http://localhost:8080",
+        "MILLION_VERIFIER_API_KEY": ""
+      }
+    }
+  }
+}

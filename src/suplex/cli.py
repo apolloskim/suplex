@@ -1,0 +1,340 @@
+"""CLI entry point — agents and humans call this."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import sys
+
+import click
+
+from suplex.models import LeadSource, ScrapeTarget, VerificationStatus
+from suplex.store.db import LeadStore
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    stream=sys.stderr,
+)
+
+
+@click.group()
+def cli() -> None:
+    """Suplex — Agent-driven lead scraping and verification."""
+
+
+# ---------------------------------------------------------------------------
+# setup & doctor
+# ---------------------------------------------------------------------------
+
+
+@cli.command()
+def setup() -> None:
+    """Interactive setup — configure API keys and verify services."""
+    from suplex.config import Config
+    from suplex.setup import SERVICES, validate_key
+
+    config = Config.load()
+
+    for key, meta in SERVICES.items():
+        current = getattr(config, key)
+        required = "(required)" if meta["required"] else "(optional)"
+        name = meta["name"]
+
+        if current:
+            click.echo(f"  {name}: already configured {required}", err=True)
+            if not click.confirm(f"  Reconfigure {name}?", default=False):
+                continue
+
+        click.echo(f"\n  {name} {required}", err=True)
+        click.echo(f"  {meta['description']}", err=True)
+        click.echo(f"  Sign up: {meta['signup_url']}", err=True)
+        click.echo(f"  Get key: {meta['key_url']}", err=True)
+
+        if not meta["required"]:
+            if not click.confirm(f"  Configure {name}?", default=False):
+                continue
+
+        value = click.prompt(f"  {name} key", hide_input=True)
+        if not value.strip():
+            continue
+
+        click.echo(f"  Validating...", err=True)
+        result = asyncio.run(validate_key(key, value.strip()))
+        if result["valid"]:
+            setattr(config, key, value.strip())
+            click.echo(f"  {name} validated!", err=True)
+        else:
+            click.echo(f"  {name} validation failed: {result.get('error')}", err=True)
+            if click.confirm("  Save anyway?", default=False):
+                setattr(config, key, value.strip())
+
+    config.save()
+    click.echo("\nConfig saved to ~/.config/suplex/config.toml", err=True)
+
+    # Offer to set up Reacher Docker if no Reacher key.
+    if not config.reacher_api_key:
+        click.echo("\n  No Reacher API key — checking Docker for free self-hosted verification...", err=True)
+        _check_reacher_docker()
+
+
+@cli.command()
+def doctor() -> None:
+    """Check health of all services (API keys, Docker, Reacher)."""
+    import shutil
+
+    from suplex.config import Config
+    from suplex.setup import SERVICES
+
+    config = Config.load()
+
+    click.echo("Services:", err=True)
+    for key, meta in SERVICES.items():
+        configured = bool(getattr(config, key))
+        status = "ok" if configured else ("MISSING" if meta["required"] else "skipped")
+        click.echo(f"  {meta['name']}: {status}", err=True)
+
+    click.echo("\nDocker:", err=True)
+    if shutil.which("docker"):
+        click.echo("  docker: found", err=True)
+        _check_reacher_docker()
+    else:
+        click.echo("  docker: not found", err=True)
+        click.echo("  Install: https://docs.docker.com/get-docker/", err=True)
+
+    click.echo("\nDatabase:", err=True)
+    store = LeadStore()
+    click.echo(f"  path: {store.db_path}", err=True)
+    click.echo(f"  leads: {store.count()}", err=True)
+
+
+def _check_reacher_docker() -> None:
+    """Check if Reacher Docker container is running, offer to start it."""
+    import shutil
+    import subprocess
+
+    if not shutil.which("docker"):
+        click.echo("  Docker not installed.", err=True)
+        click.echo("  Install Docker: https://docs.docker.com/get-docker/", err=True)
+        click.echo("  Then run: suplex doctor", err=True)
+        return
+
+    # Check if container exists.
+    result = subprocess.run(
+        ["docker", "inspect", "suplex-reacher"],
+        capture_output=True,
+    )
+
+    if result.returncode == 0:
+        # Check if running.
+        result = subprocess.run(
+            ["docker", "inspect", "-f", "{{.State.Running}}", "suplex-reacher"],
+            capture_output=True,
+            text=True,
+        )
+        if "true" in result.stdout:
+            click.echo("  Reacher Docker: running at localhost:8080", err=True)
+        else:
+            click.echo("  Reacher Docker: stopped", err=True)
+            if click.confirm("  Start it?", default=True):
+                subprocess.run(["docker", "start", "suplex-reacher"], capture_output=True)
+                click.echo("  Started!", err=True)
+    else:
+        click.echo("  Reacher Docker: not installed", err=True)
+        if click.confirm("  Pull and start Reacher? (free, ~50MB)", default=True):
+            click.echo("  Pulling reacherhq/backend...", err=True)
+            subprocess.run(
+                ["docker", "run", "-d",
+                 "--name", "suplex-reacher",
+                 "-p", "8080:8080",
+                 "--restart", "unless-stopped",
+                 "reacherhq/backend:latest"],
+            )
+            click.echo("  Reacher running at localhost:8080", err=True)
+
+
+# ---------------------------------------------------------------------------
+# scrape
+# ---------------------------------------------------------------------------
+
+
+@cli.group()
+def scrape() -> None:
+    """Scrape leads from various sources."""
+
+
+@scrape.command("maps")
+@click.argument("query")
+@click.option("--location", "-l", default=None, help="Location filter")
+@click.option("--max-results", "-n", default=100, help="Max results")
+@click.option("--apify-token", envvar="APIFY_TOKEN", default=None)
+def scrape_maps(query: str, location: str | None, max_results: int, apify_token: str | None) -> None:
+    """Scrape Google Maps for business leads."""
+    from suplex.scraper.coordinator import ScrapeCoordinator
+
+    store = LeadStore()
+    coord = ScrapeCoordinator(store=store, apify_token=apify_token)
+    target = ScrapeTarget(
+        source=LeadSource.GOOGLE_MAPS,
+        query=query,
+        location=location,
+        max_results=max_results,
+    )
+    leads = asyncio.run(coord.run([target]))
+    click.echo(json.dumps([l.model_dump() for l in leads], default=str, indent=2))
+
+
+@scrape.command("linkedin")
+@click.argument("query")
+@click.option("--location", "-l", default=None, help="Location filter")
+@click.option("--max-results", "-n", default=50, help="Max results")
+@click.option("--apify-token", envvar="APIFY_TOKEN", default=None)
+def scrape_linkedin(query: str, location: str | None, max_results: int, apify_token: str | None) -> None:
+    """Scrape LinkedIn for people leads."""
+    from suplex.scraper.coordinator import ScrapeCoordinator
+
+    store = LeadStore()
+    coord = ScrapeCoordinator(store=store, apify_token=apify_token)
+    target = ScrapeTarget(
+        source=LeadSource.LINKEDIN,
+        query=query,
+        location=location,
+        max_results=max_results,
+    )
+    leads = asyncio.run(coord.run([target]))
+    click.echo(json.dumps([l.model_dump() for l in leads], default=str, indent=2))
+
+
+@scrape.command("website")
+@click.argument("url")
+def scrape_website(url: str) -> None:
+    """Scrape a website for contact info."""
+    from suplex.scraper.coordinator import ScrapeCoordinator
+
+    store = LeadStore()
+    coord = ScrapeCoordinator(store=store)
+    target = ScrapeTarget(source=LeadSource.PLAYWRIGHT, query=url)
+    leads = asyncio.run(coord.run([target]))
+    click.echo(json.dumps([l.model_dump() for l in leads], default=str, indent=2))
+
+
+# ---------------------------------------------------------------------------
+# plan
+# ---------------------------------------------------------------------------
+
+
+@cli.command()
+@click.argument("domain")
+@click.option("--preferences", "-p", default="", help="Target preferences")
+@click.option("--execute", "-x", is_flag=True, help="Execute the plan immediately after generating")
+@click.option("--apify-token", envvar="APIFY_TOKEN", default=None)
+def plan(domain: str, preferences: str, execute: bool, apify_token: str | None) -> None:
+    """AI-generate a scrape plan for your business domain."""
+    from suplex.ai.strategist import Strategist
+    from suplex.scraper.coordinator import ScrapeCoordinator
+
+    async def _run() -> None:
+        s = Strategist()
+        p = await s.plan(domain=domain, preferences=preferences)
+        click.echo(json.dumps(p.model_dump(), default=str, indent=2))
+
+        if execute:
+            click.echo("\n--- Executing plan ---\n", err=True)
+            store = LeadStore()
+            coord = ScrapeCoordinator(store=store, apify_token=apify_token)
+            leads = await coord.run(p.targets)
+            click.echo(json.dumps({"leads_scraped": len(leads)}, indent=2))
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# verify
+# ---------------------------------------------------------------------------
+
+
+@cli.command()
+@click.option("--limit", "-n", default=50, help="Max emails to verify")
+def verify(limit: int) -> None:
+    """Verify unverified emails in the database."""
+    from suplex.verify.verifier import EmailVerifier
+
+    async def _run() -> None:
+        store = LeadStore()
+        v = EmailVerifier()
+        unverified = store.get_unverified_emails(limit=limit)
+        click.echo(f"Verifying {len(unverified)} emails...", err=True)
+
+        for lead in unverified:
+            if lead.email and lead.id:
+                result = await v.verify(lead.email)
+                store.update_verification(lead.id, result.status)
+                symbol = {"valid": "+", "invalid": "x", "catch_all": "?", "unknown": "~"}
+                click.echo(f"  [{symbol.get(result.status.value, '?')}] {lead.email} — {result.reason}", err=True)
+
+        click.echo(json.dumps({"verified": len(unverified)}, indent=2))
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# leads
+# ---------------------------------------------------------------------------
+
+
+@cli.command()
+@click.option("--source", "-s", type=click.Choice(["google_maps", "linkedin", "playwright"]), default=None)
+@click.option("--status", "-v", type=click.Choice(["pending", "valid", "invalid", "catch_all", "unknown"]), default=None)
+@click.option("--limit", "-n", default=100)
+def leads(source: str | None, status: str | None, limit: int) -> None:
+    """List leads from the database."""
+    store = LeadStore()
+    src = LeadSource(source) if source else None
+    vs = VerificationStatus(status) if status else None
+    results = store.get_leads(source=src, verification_status=vs, limit=limit)
+    click.echo(json.dumps([l.model_dump() for l in results], default=str, indent=2))
+
+
+@cli.command()
+def stats() -> None:
+    """Show lead count statistics."""
+    store = LeadStore()
+    data: dict[str, int] = {}
+    for src in LeadSource:
+        for vs in VerificationStatus:
+            count = store.count(source=src, verification_status=vs)
+            if count > 0:
+                data[f"{src.value}/{vs.value}"] = count
+    data["total"] = store.count()
+    click.echo(json.dumps(data, indent=2))
+
+
+# ---------------------------------------------------------------------------
+# serve (MCP server)
+# ---------------------------------------------------------------------------
+
+
+@cli.command()
+def serve() -> None:
+    """Start the MCP server (stdio transport) for AI agents."""
+    from suplex.mcp_server import main as mcp_main
+
+    mcp_main()
+
+
+# ---------------------------------------------------------------------------
+# schedule
+# ---------------------------------------------------------------------------
+
+
+@cli.command()
+@click.argument("domain")
+@click.option("--cron", "-c", default="0 9 * * 1", help="Cron expression (default: Monday 9am)")
+@click.option("--preferences", "-p", default="", help="Target preferences")
+def schedule(domain: str, cron: str, preferences: str) -> None:
+    """Schedule recurring autonomous scrape runs."""
+    from suplex.scheduler.cron import start_scheduler
+
+    click.echo(f"Scheduling scrape for '{domain}' at cron '{cron}'", err=True)
+    start_scheduler(domain=domain, preferences=preferences, cron_expr=cron)

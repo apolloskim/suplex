@@ -1,0 +1,116 @@
+"""AI strategist — decides what to scrape based on user's domain and preferences."""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+
+import anthropic
+
+from suplex.models import LeadSource, ScrapePlan, ScrapeTarget
+
+logger = logging.getLogger(__name__)
+
+SYSTEM_PROMPT = """\
+You are an expert Sales Development Representative (SDR) strategist.
+Given a user's business domain and target customer preferences, you generate
+a concrete scrape plan: what to search for on Google Maps and LinkedIn,
+and which company websites to crawl directly.
+
+Your goal is to find the highest-quality leads — decision-makers at companies
+that are a strong fit for the user's product/service.
+
+Output a JSON object with this exact schema:
+{
+  "reasoning": "Brief explanation of your strategy",
+  "targets": [
+    {
+      "source": "google_maps" | "linkedin" | "playwright",
+      "query": "search query or URL",
+      "location": "optional location filter",
+      "max_results": 100,
+      "extra": {}
+    }
+  ],
+  "schedule_cron": "optional cron expression for recurring scrapes, e.g. '0 9 * * 1' for Monday 9am"
+}
+
+Guidelines:
+- For Google Maps: use specific business category + location queries
+- For LinkedIn: use search URLs like "https://www.linkedin.com/search/results/people/?keywords=..."
+  or just keyword queries with title + industry filters
+- For Playwright: use specific company website URLs (about/team/contact pages)
+- Diversify across sources for better coverage
+- Prioritize decision-maker titles: CEO, CTO, VP, Director, Head of, Owner, Founder
+- Consider the user's industry to find adjacent/complementary businesses
+"""
+
+
+class Strategist:
+    """Uses Claude to generate scrape plans from business context."""
+
+    def __init__(self, api_key: str | None = None, model: str = "claude-sonnet-4-20250514") -> None:
+        self.client = anthropic.AsyncAnthropic(
+            api_key=api_key or os.environ.get("ANTHROPIC_API_KEY", ""),
+        )
+        self.model = model
+
+    async def plan(
+        self,
+        *,
+        domain: str,
+        preferences: str = "",
+        max_targets: int = 10,
+    ) -> ScrapePlan:
+        """Generate a scrape plan based on the user's domain and preferences.
+
+        Args:
+            domain: The user's business domain/description (e.g. "B2B SaaS for restaurants")
+            preferences: Additional preferences (location, company size, titles, etc.)
+            max_targets: Maximum number of scrape targets to generate.
+        """
+        user_message = f"""\
+My business: {domain}
+
+Additional preferences: {preferences or "None specified"}
+
+Generate a scrape plan with up to {max_targets} targets. Focus on finding
+decision-makers who would be ideal customers for my product/service.
+"""
+
+        logger.info("Generating scrape plan for domain: %s", domain)
+
+        response = await self.client.messages.create(
+            model=self.model,
+            max_tokens=2048,
+            system=SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_message}],
+        )
+
+        text = response.content[0].text
+
+        # Extract JSON from response (handle markdown code blocks).
+        if "```json" in text:
+            text = text.split("```json")[1].split("```")[0]
+        elif "```" in text:
+            text = text.split("```")[1].split("```")[0]
+
+        data = json.loads(text.strip())
+
+        targets = [
+            ScrapeTarget(
+                source=LeadSource(t["source"]),
+                query=t["query"],
+                location=t.get("location"),
+                max_results=t.get("max_results", 100),
+                extra=t.get("extra", {}),
+            )
+            for t in data["targets"]
+        ]
+
+        return ScrapePlan(
+            reasoning=data["reasoning"],
+            targets=targets,
+            schedule_cron=data.get("schedule_cron"),
+        )

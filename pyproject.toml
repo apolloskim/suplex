@@ -1,0 +1,60 @@
+[project]
+name = "suplex-ai"
+version = "0.1.0"
+description = "Agent-driven lead scraping, enrichment, and email verification pipeline"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Libraries",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+    # Scraping
+    "playwright>=1.58",
+    "apify-client>=2.5",
+    "httpx>=0.28",
+    # Concurrency
+    "anyio>=4.9",
+    "psutil>=6.0",
+    # AI
+    "anthropic>=0.52",
+    # Email verification
+    "email-validator>=2.2",
+    # MCP server
+    "mcp[cli]>=1.9",
+    # CLI
+    "click>=8.1",
+    # Scheduling
+    "apscheduler>=4.0.0a5",
+    # Data
+    "pydantic>=2.11",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.25",
+    "ruff>=0.11",
+]
+
+[project.scripts]
+suplex = "suplex.cli:cli"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/suplex"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
