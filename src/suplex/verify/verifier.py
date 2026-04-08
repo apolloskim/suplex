@@ -203,7 +203,7 @@ class EmailVerifier:
 
     async def _check_reacher(self, email: str) -> VerificationResult:
         try:
-            async with httpx.AsyncClient(timeout=90) as client:
+            async with httpx.AsyncClient(timeout=120) as client:
                 resp = await client.post(
                     f"{self._reacher_url}/v0/check_email",
                     headers=self._reacher_headers,
@@ -245,7 +245,7 @@ class EmailVerifier:
 
     async def _check_million_verifier(self, email: str) -> VerificationResult:
         try:
-            async with httpx.AsyncClient(timeout=90) as client:
+            async with httpx.AsyncClient(timeout=120) as client:
                 resp = await client.get(
                     "https://api.millionverifier.com/api/v3/",
                     params={"api": self.million_verifier_key, "email": email},
