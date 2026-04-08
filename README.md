@@ -5,11 +5,18 @@ Agent-driven lead scraping, enrichment, and email verification.
 ## Install
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/apolloskim/suplex/main/install.sh | bash
+suplex setup
+```
+
+Or via pip:
+
+```bash
 pip install suplex-ai
 suplex setup
 ```
 
-That's it. `suplex setup` installs the agent skill, registers the MCP server, sets up Playwright, and configures your API keys.
+`suplex setup` installs the agent skill, registers the MCP server, sets up Playwright, and configures your API keys.
 
 ## What it does
 
