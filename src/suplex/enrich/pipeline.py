@@ -160,8 +160,9 @@ class EnrichmentPipeline:
                     enrichment["email_verification"] = {"status": "valid", "reason": "verified_during_guessing"}
                     stats["emails_guessed"] += 1
 
-        # Step 5: LinkedIn posts.
-        if self.linkedin_posts > 0 and lead.linkedin_url and self.apify_token:
+        # Step 5: LinkedIn posts — only for leads WITH an email (don't waste credits on unreachable leads).
+        has_email = found_email or lead.email or enrichment.get("email_found")
+        if self.linkedin_posts > 0 and lead.linkedin_url and self.apify_token and has_email:
             try:
                 posts = await self._fetch_linkedin_posts(lead.linkedin_url)
                 if posts:
