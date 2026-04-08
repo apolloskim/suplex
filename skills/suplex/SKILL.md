@@ -27,11 +27,14 @@ Default: **Playwright** (free, 500 places/day). Reviews included (5 per place).
 
 ```bash
 suplex scrape maps "dentists" -l "Texas" -s playwright -n 20
+suplex scrape maps "dentists" -l "US" --only WY,VT -n 20         # only these states
+suplex scrape maps "dentists" -l "US" --exclude WY,VT -n 20      # skip done states
 suplex scrape maps "dentists" -l "Austin, TX" -s apify -n 50
-suplex scrape maps "dentists" -l "Austin, TX" -r 0 -n 20     # skip reviews
 ```
 
 Scraping auto-enriches by default. Add `--no-enrich` to skip.
+
+**State filters:** When scraping US/country-level, use `--only` or `--exclude` to target specific states. Check `suplex jobs` for completed states before running — exclude what's already done to save time and Apify credits.
 
 Each lead gets: name, rating, review_count, phone, address, website, category, hours, price level, Google Maps URL, reviews (author, stars, date, text).
 
@@ -44,6 +47,8 @@ Always Apify. Always full+email mode. **Always pass `-n`.**
 ```bash
 suplex scrape linkedin "dental hygienist" -l "Texas" -n 20
 suplex scrape linkedin "" -l "US" -t "Office Manager" -n 50
+suplex scrape linkedin "dentist" -l "US" --only CA,TX -n 20      # only these states
+suplex scrape linkedin "dentist" -l "US" --exclude WY -n 20      # skip done states
 ```
 
 Each lead gets: name, email (pre-verified), title, headline, about, company, experience, education, skills, connections, followers, openToWork, hiring, company website.
