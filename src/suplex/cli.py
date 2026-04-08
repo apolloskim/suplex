@@ -269,8 +269,9 @@ def scrape() -> None:
 @click.option("--max-results", "-n", default=0, help="Max results per tile (0=exhaust)")
 @click.option("--scraper", "-s", type=click.Choice(["auto", "playwright", "apify"]), default="auto", help="Force scraper: playwright (free) or apify (paid)")
 @click.option("--reviews", "-r", default=5, help="Reviews per place (0=skip)")
+@click.option("--enrich/--no-enrich", default=True, help="Auto-enrich after scraping (default: yes)")
 @click.option("--apify-token", envvar="APIFY_TOKEN", default=None)
-def scrape_maps(query: str, location: str | None, max_results: int, scraper: str, reviews: int, apify_token: str | None) -> None:
+def scrape_maps(query: str, location: str | None, max_results: int, scraper: str, reviews: int, enrich: bool, apify_token: str | None) -> None:
     """Scrape Google Maps for business leads."""
     from suplex.config import Config
     from suplex.scraper.coordinator import ScrapeCoordinator
@@ -288,6 +289,10 @@ def scrape_maps(query: str, location: str | None, max_results: int, scraper: str
     leads = asyncio.run(coord.run([target], job_id=job_id))
     click.echo(json.dumps({"leads": len(leads)}, indent=2))
 
+    # Auto-enrich unless --no-enrich or SUPLEX_NO_ENRICH env.
+    if enrich and not os.environ.get("SUPLEX_NO_ENRICH"):
+        _auto_enrich(store, token)
+
 
 @scrape.command("linkedin")
 @click.argument("query")
@@ -297,10 +302,11 @@ def scrape_maps(query: str, location: str | None, max_results: int, scraper: str
 @click.option("--industries", default=None, help="Industry IDs (comma-separated)")
 @click.option("--mode", "-m", type=click.Choice(["short", "full", "full_with_email"]), default="full_with_email")
 @click.option("--max-results", "-n", default=0, help="Max results (0 = exhaust)")
+@click.option("--enrich/--no-enrich", default=True, help="Auto-enrich after scraping (default: yes)")
 @click.option("--apify-token", envvar="APIFY_TOKEN", default=None)
 def scrape_linkedin(
     query: str, location: str | None, titles: str | None, companies: str | None,
-    industries: str | None, mode: str, max_results: int, apify_token: str | None,
+    industries: str | None, mode: str, max_results: int, enrich: bool, apify_token: str | None,
 ) -> None:
     """Scrape LinkedIn for people leads."""
     from suplex.config import Config
@@ -328,6 +334,9 @@ def scrape_linkedin(
     job_id = os.environ.get("SUPLEX_JOB_ID")
     leads = asyncio.run(coord.run([target], job_id=job_id))
     click.echo(json.dumps({"leads": len(leads)}, indent=2))
+
+    if enrich and not os.environ.get("SUPLEX_NO_ENRICH"):
+        _auto_enrich(store, token)
 
 
 @scrape.command("website")
@@ -371,6 +380,22 @@ def plan(domain: str, preferences: str, execute: bool, apify_token: str | None) 
             click.echo(json.dumps({"leads_scraped": len(leads)}, indent=2))
 
     asyncio.run(_run())
+
+
+def _auto_enrich(store: LeadStore, apify_token: str | None) -> None:
+    """Run enrichment on unenriched leads after scraping."""
+    from suplex.enrich.pipeline import EnrichmentPipeline
+
+    unenriched = store.get_unenriched(limit=1)
+    if not unenriched:
+        return
+
+    click.echo("Auto-enriching scraped leads...", err=True)
+    pipeline = EnrichmentPipeline(store=store, apify_token=apify_token, linkedin_posts=1)
+    job_id = os.environ.get("SUPLEX_JOB_ID")
+    enrich_job_id = f"{job_id}_enrich" if job_id else None
+    stats = asyncio.run(pipeline.run(limit=9999, job_id=enrich_job_id))
+    click.echo(json.dumps(stats, default=str, indent=2))
 
 
 # ---------------------------------------------------------------------------
@@ -551,14 +576,17 @@ def run() -> None:
 @click.option("--location", "-l", required=True, help="Location")
 @click.option("--max-results", "-n", default=0, help="Max results per tile (0=exhaust)")
 @click.option("--scraper", "-s", type=click.Choice(["auto", "playwright", "apify"]), default="auto")
-def run_scrape_maps(query: str, location: str, max_results: int, scraper: str) -> None:
-    """Launch Google Maps scrape in background."""
+@click.option("--no-enrich", is_flag=True, default=False, help="Skip auto-enrichment")
+def run_scrape_maps(query: str, location: str, max_results: int, scraper: str, no_enrich: bool) -> None:
+    """Launch Google Maps scrape + enrich in background."""
     from suplex.jobs import launch_scrape_job
     extra = []
     if max_results > 0:
         extra.extend(["-n", str(max_results)])
     if scraper != "auto":
         extra.extend(["-s", scraper])
+    if no_enrich:
+        extra.append("--no-enrich")
     result = launch_scrape_job("maps", query, location, max_results=max_results, extra_args=extra)
     click.echo(json.dumps(result, indent=2))
 
@@ -568,14 +596,17 @@ def run_scrape_maps(query: str, location: str, max_results: int, scraper: str) -
 @click.option("--location", "-l", required=True, help="Location")
 @click.option("--titles", "-t", default=None, help="Job titles (comma-separated)")
 @click.option("--max-results", "-n", default=0, help="Max results (0=exhaust)")
-def run_scrape_linkedin(query: str, location: str, titles: str | None, max_results: int) -> None:
-    """Launch LinkedIn scrape in background."""
+@click.option("--no-enrich", is_flag=True, default=False, help="Skip auto-enrichment")
+def run_scrape_linkedin(query: str, location: str, titles: str | None, max_results: int, no_enrich: bool) -> None:
+    """Launch LinkedIn scrape + enrich in background."""
     from suplex.jobs import launch_scrape_job
     extra = []
     if titles:
         extra.extend(["-t", titles])
     if max_results > 0:
         extra.extend(["-n", str(max_results)])
+    if no_enrich:
+        extra.append("--no-enrich")
     result = launch_scrape_job("linkedin", query, location, max_results=max_results, extra_args=extra)
     click.echo(json.dumps(result, indent=2))
 
