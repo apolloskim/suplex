@@ -62,6 +62,9 @@ class GMapsScraper:
     _daily_count: int = 0
     _daily_date: str = ""
 
+    def __init__(self, *, reviews_per_place: int = 5) -> None:
+        self.reviews_per_place = reviews_per_place
+
     async def scrape(self, target: ScrapeTarget) -> list[Lead]:
         # Check daily limit.
         from datetime import date
@@ -142,7 +145,7 @@ class GMapsScraper:
                     if GMapsScraper._daily_count >= DAILY_LIMIT:
                         logger.warning("Daily limit reached mid-scrape (%d). Stopping.", DAILY_LIMIT)
                         break
-                    detail = await self._extract_place(page, place_url, context=context)
+                    detail = await self._extract_place(page, place_url, context=context, max_reviews=self.reviews_per_place)
                     if detail:
                         lead = self._to_lead(detail, query)
                         leads.append(lead)

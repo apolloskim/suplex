@@ -41,13 +41,14 @@ class ScrapeCoordinator:
         api_concurrency: int = DEFAULT_API_CONCURRENCY,
         apify_token: str | None = None,
         scraper: str = "auto",
+        reviews_per_place: int = 5,
     ) -> None:
         self.store = store
         self.browser_limiter = anyio.CapacityLimiter(browser_concurrency)
         self.api_limiter = anyio.CapacityLimiter(api_concurrency)
         self.site_scraper = SiteScraper()
         self.apify_scraper = ApifyScraper(token=apify_token)
-        self.gmaps_scraper = GMapsScraper()
+        self.gmaps_scraper = GMapsScraper(reviews_per_place=reviews_per_place)
         self.linkedin_scraper = LinkedInScraper(token=apify_token, store=store)
         self._has_apify = bool(apify_token)
         self._scraper = scraper
