@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_BROWSER_CONCURRENCY = 3
 DEFAULT_API_CONCURRENCY = 10
-CPU_THROTTLE_PERCENT = 80.0
+CPU_THROTTLE_PERCENT = 95.0
 
 
 class ScrapeCoordinator:
