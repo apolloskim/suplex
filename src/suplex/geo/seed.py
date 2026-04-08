@@ -1,4 +1,4 @@
-"""Seed the cities table from bundled data."""
+"""Seed the cities and LinkedIn location tables from bundled data."""
 
 from __future__ import annotations
 
@@ -16,38 +16,38 @@ US_CITIES_PATH = GEO_DIR / "us-cities.json"
 WORLD_CITIES_PATH = GEO_DIR / "worldcities.csv"
 LINKEDIN_LOCATIONS_PATH = GEO_DIR / "linkedin-location-autocomplete.json"
 
-MIN_POPULATION = 0  # Include all cities.
+MIN_POPULATION = 0
 
 
 def ensure_cities_seeded(store: LeadStore | None = None) -> None:
-    """Seed cities if not already done. Called lazily on first geo query."""
+    """Seed cities + LinkedIn locations if needed. Called lazily on first geo query."""
     store = store or LeadStore()
-    if store.cities_seeded():
-        return
 
+    # --- Cities ---
+    if not store.cities_seeded():
+        _seed_cities(store)
+
+    # --- LinkedIn locations (separate check, can update independently) ---
+    _ensure_linkedin_seeded(store)
+
+
+def _seed_cities(store: LeadStore) -> None:
     count = 0
 
-    # Seed US cities (higher quality data with state codes).
     if US_CITIES_PATH.exists():
         logger.info("Seeding US cities...")
         with open(US_CITIES_PATH) as f:
             us_cities = json.load(f)
         rows = [
             {
-                "name": c["name"],
-                "state": c["state"],
-                "country_code": "US",
-                "country_name": "United States",
-                "lat": c["lat"],
-                "lng": c["lng"],
-                "pop": c["pop"],
+                "name": c["name"], "state": c["state"],
+                "country_code": "US", "country_name": "United States",
+                "lat": c["lat"], "lng": c["lng"], "pop": c["pop"],
             }
-            for c in us_cities
-            if c["pop"] >= MIN_POPULATION
+            for c in us_cities if c["pop"] >= MIN_POPULATION
         ]
         count += store.seed_cities(rows)
 
-    # Seed world cities (excluding US since we already have better data).
     if WORLD_CITIES_PATH.exists():
         logger.info("Seeding world cities...")
         with open(WORLD_CITIES_PATH, newline="", encoding="utf-8") as f:
@@ -55,7 +55,7 @@ def ensure_cities_seeded(store: LeadStore | None = None) -> None:
             rows = []
             for row in reader:
                 if row["iso2"] == "US":
-                    continue  # Already seeded with better US data.
+                    continue
                 pop_str = row.get("population", "")
                 pop = int(float(pop_str)) if pop_str else 0
                 if pop < MIN_POPULATION:
@@ -73,26 +73,53 @@ def ensure_cities_seeded(store: LeadStore | None = None) -> None:
 
     logger.info("Seeded %d cities total", count)
 
-    # Seed LinkedIn locations if available and not yet done.
-    if not store.linkedin_locations_seeded() and LINKEDIN_LOCATIONS_PATH.exists():
-        logger.info("Seeding LinkedIn locations...")
-        with open(LINKEDIN_LOCATIONS_PATH) as f:
-            li_data = json.load(f)
 
-        rows = []
-        # Compact format: {"city": ["suggestion1", "suggestion2", ...]}
-        for query_key, suggestions in li_data.items():
-            if isinstance(suggestions, list) and suggestions:
-                rows.append({
-                    "query": query_key,
-                    "suggestions": json.dumps(suggestions),
-                    "scraped_at": "",
-                })
+def _ensure_linkedin_seeded(store: LeadStore) -> None:
+    if not LINKEDIN_LOCATIONS_PATH.exists():
+        return
 
-        li_count = store.seed_linkedin_locations(rows)
-        logger.info("Seeded %d LinkedIn locations", li_count)
+    # Check if we need to seed or update.
+    with open(LINKEDIN_LOCATIONS_PATH) as f:
+        bundled = json.load(f)
+    bundled_count = len(bundled)
 
-    # Build geo map if not done.
-    if not store.linkedin_geo_map_seeded() and store.linkedin_locations_seeded():
-        from suplex.geo.build_geo_map import build_geo_map
-        build_geo_map(store)
+    with store._conn() as conn:
+        db_count = conn.execute("SELECT COUNT(*) FROM linkedin_locations").fetchone()[0]
+
+    needs_seed = db_count == 0 or bundled_count > db_count
+
+    if not needs_seed:
+        # Also check geo map.
+        with store._conn() as conn:
+            geo_count = conn.execute("SELECT COUNT(*) FROM linkedin_geo_map").fetchone()[0]
+        if geo_count == 0:
+            needs_seed = True  # Geo map missing, rebuild from existing data.
+            _rebuild_geo_map(store)
+        return
+
+    if db_count > 0:
+        logger.info("LinkedIn locations outdated (%d → %d) — updating", db_count, bundled_count)
+
+    # Seed locations.
+    logger.info("Seeding LinkedIn locations...")
+    rows = []
+    for query_key, suggestions in bundled.items():
+        if isinstance(suggestions, list) and suggestions:
+            rows.append({
+                "query": query_key,
+                "suggestions": json.dumps(suggestions),
+                "scraped_at": "",
+            })
+    store.seed_linkedin_locations(rows)
+    logger.info("Seeded %d LinkedIn locations", len(rows))
+
+    # Rebuild geo map.
+    _rebuild_geo_map(store)
+
+
+def _rebuild_geo_map(store: LeadStore) -> None:
+    from suplex.geo.build_geo_map import build_geo_map
+    logger.info("Rebuilding geo map...")
+    with store._conn() as conn:
+        conn.execute("DELETE FROM linkedin_geo_map")
+    build_geo_map(store)
