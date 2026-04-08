@@ -335,6 +335,12 @@ async def list_tools() -> list[Tool]:
                         "description": "LinkedIn posts per lead (for enrich jobs)",
                         "default": 1,
                     },
+                    "scraper": {
+                        "type": "string",
+                        "enum": ["auto", "playwright", "apify"],
+                        "description": "For Google Maps: playwright (free, slower) or apify (paid, faster). Default: auto.",
+                        "default": "auto",
+                    },
                 },
                 "required": ["type"],
             },
@@ -490,6 +496,9 @@ async def _dispatch(name: str, args: dict) -> dict:
         job_type = args["type"]
         if job_type == "scrape_maps":
             extra = []
+            scraper = args.get("scraper", "auto")
+            if scraper != "auto":
+                extra.extend(["-s", scraper])
             return launch_scrape_job("maps", args.get("query", ""), args.get("location", ""), extra_args=extra)
         elif job_type == "scrape_linkedin":
             extra = []

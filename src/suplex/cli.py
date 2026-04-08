@@ -191,16 +191,17 @@ def scrape() -> None:
 @scrape.command("maps")
 @click.argument("query")
 @click.option("--location", "-l", default=None, help="Location filter")
-@click.option("--max-results", "-n", default=100, help="Max results")
+@click.option("--max-results", "-n", default=0, help="Max results per tile (0=exhaust)")
+@click.option("--scraper", "-s", type=click.Choice(["auto", "playwright", "apify"]), default="auto", help="Force scraper: playwright (free) or apify (paid)")
 @click.option("--apify-token", envvar="APIFY_TOKEN", default=None)
-def scrape_maps(query: str, location: str | None, max_results: int, apify_token: str | None) -> None:
+def scrape_maps(query: str, location: str | None, max_results: int, scraper: str, apify_token: str | None) -> None:
     """Scrape Google Maps for business leads."""
     from suplex.config import Config
     from suplex.scraper.coordinator import ScrapeCoordinator
 
     token = apify_token or Config.load().apify_token
     store = LeadStore()
-    coord = ScrapeCoordinator(store=store, apify_token=token)
+    coord = ScrapeCoordinator(store=store, apify_token=token, scraper=scraper)
     target = ScrapeTarget(
         source=LeadSource.GOOGLE_MAPS,
         query=query,

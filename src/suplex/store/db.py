@@ -86,6 +86,20 @@ CREATE TABLE IF NOT EXISTS jobs (
 
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
 
+CREATE TABLE IF NOT EXISTS item_tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT NOT NULL,
+    item_key TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    started_at TEXT,
+    finished_at TEXT,
+    error TEXT,
+    UNIQUE(job_id, item_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_item_tasks_job ON item_tasks(job_id, status);
+
 CREATE TABLE IF NOT EXISTS sender_profile (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     website TEXT NOT NULL,
@@ -464,6 +478,76 @@ class LeadStore:
                 d["meta"] = json.loads(d["meta"]) if d["meta"] else {}
                 results.append(d)
             return results
+
+    # ------------------------------------------------------------------
+    # Item tasks (resumable processing)
+    # ------------------------------------------------------------------
+
+    def seed_item_tasks(self, job_id: str, item_keys: list[str]) -> int:
+        with self._conn() as conn:
+            conn.executemany(
+                "INSERT OR IGNORE INTO item_tasks (job_id, item_key) VALUES (?, ?)",
+                [(job_id, k) for k in item_keys],
+            )
+            return len(item_keys)
+
+    def claim_item_task(self, job_id: str) -> str | None:
+        """Claim the next pending item. Returns item_key or None."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT item_key FROM item_tasks WHERE job_id = ? AND status = 'pending' LIMIT 1",
+                (job_id,),
+            ).fetchone()
+            if row:
+                conn.execute(
+                    """UPDATE item_tasks SET status = 'processing', started_at = ?, attempts = attempts + 1
+                       WHERE job_id = ? AND item_key = ?""",
+                    (datetime.utcnow().isoformat(), job_id, row["item_key"]),
+                )
+                return row["item_key"]
+        return None
+
+    def complete_item_task(self, job_id: str, item_key: str) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE item_tasks SET status = 'done', finished_at = ? WHERE job_id = ? AND item_key = ?",
+                (datetime.utcnow().isoformat(), job_id, item_key),
+            )
+
+    def fail_item_task(self, job_id: str, item_key: str, error: str) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE item_tasks SET status = 'failed', finished_at = ?, error = ? WHERE job_id = ? AND item_key = ?",
+                (datetime.utcnow().isoformat(), error, job_id, item_key),
+            )
+
+    def reset_stale_tasks(self, job_id: str, timeout_seconds: int = 300) -> int:
+        """Reset items stuck in 'processing' longer than timeout back to 'pending'."""
+        from datetime import timedelta
+        cutoff = (datetime.utcnow() - timedelta(seconds=timeout_seconds)).isoformat()
+        with self._conn() as conn:
+            cur = conn.execute(
+                """UPDATE item_tasks SET status = 'pending'
+                   WHERE job_id = ? AND status = 'processing' AND started_at < ?""",
+                (job_id, cutoff),
+            )
+            return cur.rowcount
+
+    def get_item_task_counts(self, job_id: str) -> dict[str, int]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT status, COUNT(*) as cnt FROM item_tasks WHERE job_id = ? GROUP BY status",
+                (job_id,),
+            ).fetchall()
+            return {row["status"]: row["cnt"] for row in rows}
+
+    def is_item_done(self, job_id: str, item_key: str) -> bool:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT status FROM item_tasks WHERE job_id = ? AND item_key = ?",
+                (job_id, item_key),
+            ).fetchone()
+            return row is not None and row["status"] == "done"
 
     # ------------------------------------------------------------------
 
