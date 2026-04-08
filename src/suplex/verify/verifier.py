@@ -45,6 +45,7 @@ class EmailVerifier:
         self._reacher_url: str | None = None
         self._reacher_headers: dict[str, str] = {}
         self._setup_attempted = False
+        self.setup_log: list[str] = []  # Human-readable status for agent to relay.
 
     async def _ensure_reacher(self) -> bool:
         """Ensure Reacher is available. Fully automatic Docker management."""
@@ -58,21 +59,24 @@ class EmailVerifier:
         # 1. Already running?
         if await self._ping(REACHER_LOCAL_URL):
             self._reacher_url = REACHER_LOCAL_URL
+            self.setup_log.append("Email verification ready.")
             return True
 
         # 2. Docker available? Start everything.
+        self.setup_log.append("Setting up email verification (SMTP handshake via local Docker)...")
         if await self._ensure_docker_and_reacher():
             self._reacher_url = REACHER_LOCAL_URL
+            self.setup_log.append("Email verification ready — verifies emails by connecting to mail servers.")
             return True
 
         # 3. Hosted API fallback.
         if self.reacher_api_key:
             self._reacher_url = REACHER_HOSTED_URL
             self._reacher_headers = {"Authorization": self.reacher_api_key}
-            logger.info("Using Reacher hosted API")
+            self.setup_log.append("Email verification ready (hosted API).")
             return True
 
-        logger.warning("No Reacher available — verification will be syntax + DNS only")
+        self.setup_log.append("Email verification limited to syntax checks — Docker not available for SMTP verification.")
         return False
 
     @staticmethod

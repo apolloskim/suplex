@@ -55,8 +55,8 @@ class EnrichmentPipeline:
         self.apify_token = apify_token or os.environ.get("APIFY_TOKEN", "")
         self.linkedin_posts = linkedin_posts
 
-    async def run(self, limit: int = 100) -> dict[str, int]:
-        """Enrich up to `limit` unenriched leads. Returns stats."""
+    async def run(self, limit: int = 100) -> dict:
+        """Enrich up to `limit` unenriched leads. Returns stats + setup messages."""
         leads = self.store.get_unenriched(limit=limit)
         if not leads:
             logger.info("No unenriched leads to process")
@@ -64,7 +64,7 @@ class EnrichmentPipeline:
 
         logger.info("Enriching %d leads", len(leads))
 
-        stats = {"processed": 0, "sites_scraped": 0, "emails_verified": 0, "emails_found": 0, "linkedin_posts": 0}
+        stats: dict = {"processed": 0, "sites_scraped": 0, "emails_verified": 0, "emails_found": 0, "linkedin_posts": 0}
 
         for lead in leads:
             try:
@@ -76,6 +76,10 @@ class EnrichmentPipeline:
                     logger.info("Enriched %d/%d leads", stats["processed"], len(leads))
             except Exception:
                 logger.exception("Failed to enrich lead %s (id=%s)", lead.name, lead.id)
+
+        # Include setup messages from verifier so agent can relay to user.
+        if self.verifier.setup_log:
+            stats["setup_messages"] = self.verifier.setup_log
 
         logger.info("Enrichment complete: %s", stats)
         return stats
