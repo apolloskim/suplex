@@ -132,14 +132,19 @@ class EnrichmentPipeline:
                 self.store.update_email(lead.id, found_email)
 
         # Step 3: Verify existing/found email.
+        # Skip verification for LinkedIn leads — their emails are pre-verified by Apify.
         if found_email and lead.id:
-            try:
-                result = await self.verifier.verify(found_email)
-                self.store.update_verification(lead.id, result.status)
-                enrichment["email_verification"] = result.model_dump()
+            if lead.source == LeadSource.LINKEDIN and lead.verification_status != VerificationStatus.PENDING:
+                enrichment["email_verification"] = {"status": lead.verification_status.value, "reason": "pre_verified_by_apify"}
                 stats["emails_verified"] += 1
-            except Exception:
-                logger.debug("Email verification failed for %s", found_email)
+            else:
+                try:
+                    result = await self.verifier.verify(found_email)
+                    self.store.update_verification(lead.id, result.status)
+                    enrichment["email_verification"] = result.model_dump()
+                    stats["emails_verified"] += 1
+                except Exception:
+                    logger.debug("Email verification failed for %s", found_email)
 
         # Step 4: Guess email if still none.
         if not found_email and website:

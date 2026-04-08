@@ -210,23 +210,43 @@ class LinkedInScraper:
 
     @staticmethod
     def _to_lead(item: dict[str, Any], query: str, location: str | None) -> Lead:
-        """Convert an Apify LinkedIn profile to a Lead."""
+        """Convert an Apify LinkedIn profile to a Lead with all SDR-relevant signals."""
         first = item.get("firstName", "") or ""
         last = item.get("lastName", "") or ""
         name = f"{first} {last}".strip() or item.get("fullName")
 
-        # Extract company + title from currentPositions (nested in short mode).
-        current_company = item.get("currentCompany") or item.get("companyName", "")
-        current_title = item.get("currentPosition") or item.get("headline", "")
-        positions = item.get("currentPositions") or item.get("positions") or []
-        if positions and isinstance(positions, list) and positions[0]:
+        # Company + title from currentPosition (full mode returns list).
+        current_company = ""
+        current_title = item.get("headline", "")
+        positions = item.get("currentPosition") or item.get("currentPositions") or []
+        if isinstance(positions, list) and positions:
             pos = positions[0]
-            if not current_company:
-                current_company = pos.get("companyName", "")
-            if not current_title:
-                current_title = pos.get("title", "")
+            current_company = pos.get("companyName", "")
+            # Title from experience is more specific than headline.
+        # Fallback to experience.
+        if not current_company:
+            exp = item.get("experience") or []
+            if isinstance(exp, list) and exp:
+                current_company = exp[0].get("companyName", "")
+                if not current_title or current_title == item.get("headline", ""):
+                    current_title = exp[0].get("position", "") or current_title
 
-        # Location.
+        # Email — from emails[] array (pre-verified by Apify, no re-verification needed).
+        email = ""
+        email_status = ""
+        emails_list = item.get("emails") or []
+        if isinstance(emails_list, list) and emails_list:
+            best = emails_list[0]
+            if isinstance(best, dict):
+                email = best.get("email", "")
+                email_status = best.get("status", "")
+            elif isinstance(best, str):
+                email = best
+        # Fallback to flat email field.
+        if not email:
+            email = item.get("email") or item.get("personalEmail", "")
+
+        # Location — structured.
         raw_loc = item.get("location") or item.get("locationText", "")
         if isinstance(raw_loc, dict):
             lead_location = raw_loc.get("linkedinText", "") or raw_loc.get("default", "") or ""
@@ -239,15 +259,26 @@ class LinkedInScraper:
         if not li_url and public_id:
             li_url = f"https://www.linkedin.com/in/{public_id}"
 
-        # Email (full+email mode).
-        email = item.get("email") or item.get("personalEmail", "")
-
-        # Website.
+        # Website — from companyWebsites[].
         websites = item.get("companyWebsites") or item.get("websites") or []
-        website = websites[0] if websites else item.get("companyWebsite", "")
+        website = ""
+        if isinstance(websites, list) and websites:
+            w = websites[0]
+            website = w.get("url", "") if isinstance(w, dict) else str(w)
 
         # Phone.
         phone = item.get("phone") or item.get("phoneNumber", "")
+
+        # Verification status — LinkedIn emails are pre-verified by Apify.
+        from suplex.models import VerificationStatus
+        verification = VerificationStatus.PENDING
+        if email and email_status:
+            if email_status in ("valid", "safe"):
+                verification = VerificationStatus.VALID
+            elif email_status == "risky":
+                verification = VerificationStatus.CATCH_ALL
+            elif email_status == "invalid":
+                verification = VerificationStatus.INVALID
 
         return Lead(
             name=name,
@@ -259,6 +290,7 @@ class LinkedInScraper:
             linkedin_url=li_url,
             website=website or None,
             source=LeadSource.LINKEDIN,
+            verification_status=verification,
             raw_data={
                 **item,
                 "search_query": query,
