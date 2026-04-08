@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 from suplex.store.db import LeadStore
@@ -29,9 +30,10 @@ def launch_scrape_job(
     *,
     max_results: int = 0,
     extra_args: list[str] | None = None,
+    job_id: str | None = None,
 ) -> dict:
     """Launch a scrape job in the background. Returns job info immediately."""
-    job_id = _gen_id()
+    job_id = job_id or _gen_id()
     log_path = _log_path(job_id)
 
     cmd = [
@@ -55,9 +57,10 @@ def launch_enrich_job(
     *,
     limit: int = 100,
     linkedin_posts: int = 1,
+    job_id: str | None = None,
 ) -> dict:
     """Launch an enrichment job in the background."""
-    job_id = _gen_id()
+    job_id = job_id or _gen_id()
     log_path = _log_path(job_id)
 
     cmd = [
@@ -145,27 +148,35 @@ def get_batch_status(batch_id: str) -> dict:
 def _launch_child_job(child: dict) -> None:
     """Launch a single child job from a batch."""
     meta = child.get("meta", {})
+    if isinstance(meta, str):
+        meta = json.loads(meta)
     job_type = child["type"]
     job_id = child["job_id"]
 
-    # Mark as running.
+    # Mark as running (row already exists from create_batch_job).
     store = LeadStore()
-    store.create_job(job_id, job_type, total=0)
+    with store._conn() as conn:
+        conn.execute("UPDATE jobs SET status = 'running', started_at = ? WHERE id = ?",
+                     (datetime.utcnow().isoformat(), job_id))
 
     if job_type in ("scrape_maps", "scrape_linkedin"):
         source = "maps" if job_type == "scrape_maps" else "linkedin"
         query = meta.get("query", "")
         location = meta.get("location", "")
+        max_results = meta.get("max_results", 0)
         extra = []
         if meta.get("scraper"):
             extra.extend(["-s", meta["scraper"]])
         if meta.get("titles"):
             extra.extend(["-t", meta["titles"]])
-        launch_scrape_job(source, query, location, extra_args=extra)
+        if max_results > 0:
+            extra.extend(["-n", str(max_results)])
+        launch_scrape_job(source, query, location, max_results=max_results, extra_args=extra, job_id=job_id)
     elif job_type == "enrich":
         launch_enrich_job(
             limit=meta.get("limit", 100),
             linkedin_posts=meta.get("linkedin_posts", 1),
+            job_id=job_id,
         )
 
 
