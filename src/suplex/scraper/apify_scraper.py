@@ -1,9 +1,15 @@
-"""Apify-based scrapers for Google Maps and LinkedIn."""
+"""Apify-based scrapers for Google Maps and LinkedIn.
+
+Google Maps: uses customGeolocation (GeoJSON polygon) for US states when available.
+Polygon-based search yields 10-30x more results than text-based locationQuery.
+"""
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 from apify_client import ApifyClientAsync
@@ -12,9 +18,29 @@ from suplex.models import Lead, LeadSource, ScrapeTarget
 
 logger = logging.getLogger(__name__)
 
-# Apify actor IDs.
 GOOGLE_MAPS_ACTOR = "compass/crawler-google-places"
 LINKEDIN_PEOPLE_ACTOR = "curious_coder/linkedin-search-scraper"
+
+# State polygons for customGeolocation.
+_STATE_POLYGONS: dict[str, Any] | None = None
+_STATES_PATH = Path(__file__).parent.parent / "geo" / "us-states.json"
+
+
+def _get_state_polygon(state_name: str) -> dict | None:
+    """Get GeoJSON geometry for a US state. Loaded lazily."""
+    global _STATE_POLYGONS
+    if _STATE_POLYGONS is None:
+        if _STATES_PATH.exists():
+            with open(_STATES_PATH) as f:
+                data = json.load(f)
+            _STATE_POLYGONS = {
+                feat["properties"]["NAME"].lower(): feat["geometry"]
+                for feat in data.get("features", [])
+            }
+        else:
+            _STATE_POLYGONS = {}
+
+    return _STATE_POLYGONS.get(state_name.lower())
 
 
 class ApifyScraper:
@@ -34,20 +60,35 @@ class ApifyScraper:
             raise ValueError(f"Apify doesn't handle source: {target.source}")
 
     async def scrape_google_maps(self, target: ScrapeTarget) -> list[Lead]:
-        """Scrape Google Maps for business leads."""
+        """Scrape Google Maps. Uses polygon for US states (10-30x more results)."""
         logger.info("Apify Google Maps: %s (location: %s)", target.query, target.location)
 
         run_input: dict[str, Any] = {
             "searchStringsArray": [target.query],
-            "maxCrawledPlacesPerSearch": target.max_results,
             "language": "en",
             "scrapeContacts": True,
-            "scrapeReviewsPersonalData": False,
+            "skipClosedPlaces": True,
         }
-        if target.location:
-            run_input["locationQuery"] = target.location
 
-        run_input.update(target.extra)
+        if target.max_results > 0:
+            run_input["maxCrawledPlacesPerSearch"] = target.max_results
+
+        # Try polygon first (US states), fall back to text.
+        state = target.extra.get("tile_state", "")
+        country = target.extra.get("tile_country", "")
+        polygon = None
+        if country == "US" and state:
+            # Map state code to full name for polygon lookup.
+            from suplex.geo.tiles import STATE_CODES
+            code_to_name = {v: k.title() for k, v in STATE_CODES.items() if len(k) > 2}
+            state_name = code_to_name.get(state, state)
+            polygon = _get_state_polygon(state_name)
+
+        if polygon:
+            run_input["customGeolocation"] = polygon
+            logger.info("Using polygon for %s", state)
+        elif target.location:
+            run_input["locationQuery"] = target.location
 
         items = await self._run_actor(GOOGLE_MAPS_ACTOR, run_input)
         return [self._maps_item_to_lead(item) for item in items]
