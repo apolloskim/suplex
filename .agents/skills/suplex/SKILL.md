@@ -23,22 +23,33 @@ argument-hint: <scrape|enrich|export|batch>
 
 ## Google Maps
 
-Default: **Playwright** (free, 500 places/day). Reviews included (5 per place).
+Two scrapers. Agent decides — no auto mode.
 
+**Playwright** (default, free, 500 places/day):
 ```bash
-suplex scrape maps "dentists" -l "Texas" -s playwright -n 20
-suplex scrape maps "dentists" -l "US" --only WY,VT -n 20         # only these states
-suplex scrape maps "dentists" -l "US" --exclude WY,VT -n 20      # skip done states
-suplex scrape maps "dentists" -l "Austin, TX" -s apify -n 50
+suplex scrape maps "dentists" -l "Texas" -n 20
+suplex scrape maps "dentists" -l "US" --only WY,VT -n 20
+```
+
+**Apify** (paid, 10-30x more results, uses state polygons for US):
+```bash
+suplex scrape maps "dentists" -l "Texas" -s apify -n 50
+suplex scrape maps "dentists" -l "US" --exclude WY,VT -s apify -n 100
+```
+
+Playwright → Apify switch on resume:
+```bash
+suplex resume <job_id> -s apify    # hit 500 limit, continue with Apify
 ```
 
 Scraping auto-enriches by default. Add `--no-enrich` to skip.
 
-**State filters:** When scraping US/country-level, use `--only` or `--exclude` to target specific states. Check `suplex jobs` for completed states before running — exclude what's already done to save time and Apify credits.
+**State filters:** `--only` / `--exclude` to target or skip regions. Check `suplex jobs` for completed regions — exclude them to avoid wasting time and credits.
 
 Each lead gets: name, rating, review_count, phone, address, website, category, hours, price level, Google Maps URL, reviews (author, stars, date, text).
 
-Tiling is automatic. Playwright has human-like pacing (2-15s random delays).
+Playwright: human-like pacing (2-15s delays), coordinate-based viewport search.
+Apify: polygon-based for US states (customGeolocation), text-based for non-US.
 
 ## LinkedIn
 
@@ -101,17 +112,19 @@ Per lead:
 
 ## Resume
 
-Jobs track per-tile progress. Kill → resume picks up where it left off.
+Jobs track per-tile progress. Kill → resume picks up where it left off. Can switch scraper on resume.
 
 ```bash
-suplex jobs              # find incomplete job
-suplex resume <job_id>   # done tiles skipped, failed tiles retried
+suplex jobs                           # find incomplete job
+suplex resume <job_id>                # same scraper, continue
+suplex resume <job_id> -s apify       # switch to Apify for remaining tiles
 ```
 
-Daily Playwright workflow:
+Daily workflow:
 ```
-Day 1: suplex run scrape-maps "dentist" -l Texas -s playwright -n 3 → hits 500 limit
-Day 2: suplex resume <job_id> → continues from where it stopped
+Day 1: suplex run scrape-maps "dentist" -l Texas -n 3  → hits 500 Playwright limit
+Day 2: suplex resume <job_id>                          → continue with Playwright
+  OR:  suplex resume <job_id> -s apify                 → finish faster with Apify
 ```
 
 ## Using enriched data for outreach
