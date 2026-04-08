@@ -51,6 +51,15 @@ CREATE INDEX IF NOT EXISTS idx_cities_country ON cities(country_code);
 CREATE INDEX IF NOT EXISTS idx_cities_pop ON cities(population DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_cities_name_state_country ON cities(name, state, country_code);
 
+CREATE TABLE IF NOT EXISTS linkedin_locations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    query TEXT NOT NULL UNIQUE,
+    suggestions TEXT NOT NULL DEFAULT '[]',
+    scraped_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_linkedin_loc_query ON linkedin_locations(query);
+
 CREATE TABLE IF NOT EXISTS sender_profile (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     website TEXT NOT NULL,
@@ -305,6 +314,49 @@ class LeadStore:
                 """,
             ).fetchall()
             return [dict(row) for row in rows]
+
+    # ------------------------------------------------------------------
+    # LinkedIn locations
+    # ------------------------------------------------------------------
+
+    def linkedin_locations_seeded(self) -> bool:
+        with self._conn() as conn:
+            row = conn.execute("SELECT COUNT(*) FROM linkedin_locations").fetchone()
+            return row[0] > 0
+
+    def seed_linkedin_locations(self, records: list[dict]) -> int:
+        """Bulk insert. Each dict: {query, suggestions (list[str]), scraped_at}."""
+        with self._conn() as conn:
+            conn.executemany(
+                """
+                INSERT OR IGNORE INTO linkedin_locations (query, suggestions, scraped_at)
+                VALUES (:query, :suggestions, :scraped_at)
+                """,
+                records,
+            )
+            return len(records)
+
+    def get_linkedin_location(self, query: str) -> list[str] | None:
+        """Get cached LinkedIn autocomplete suggestions for a query. None if not cached."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT suggestions FROM linkedin_locations WHERE query = ?",
+                (query,),
+            ).fetchone()
+            if row:
+                return json.loads(row["suggestions"])
+        return None
+
+    def save_linkedin_location(self, query: str, suggestions: list[str]) -> None:
+        """Cache a single LinkedIn location autocomplete result."""
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO linkedin_locations (query, suggestions, scraped_at)
+                VALUES (?, ?, ?)
+                """,
+                (query, json.dumps(suggestions), datetime.utcnow().isoformat()),
+            )
 
     # ------------------------------------------------------------------
 

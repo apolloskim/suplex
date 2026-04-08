@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 GEO_DIR = Path(__file__).parent
 US_CITIES_PATH = GEO_DIR / "us-cities.json"
 WORLD_CITIES_PATH = GEO_DIR / "worldcities.csv"
+LINKEDIN_LOCATIONS_PATH = GEO_DIR / "linkedin-location-autocomplete.json"
 
 MIN_POPULATION = 0  # Include all cities.
 
@@ -71,3 +72,22 @@ def ensure_cities_seeded(store: LeadStore | None = None) -> None:
         count += store.seed_cities(rows)
 
     logger.info("Seeded %d cities total", count)
+
+    # Seed LinkedIn locations if available and not yet done.
+    if not store.linkedin_locations_seeded() and LINKEDIN_LOCATIONS_PATH.exists():
+        logger.info("Seeding LinkedIn locations...")
+        with open(LINKEDIN_LOCATIONS_PATH) as f:
+            li_data = json.load(f)
+
+        rows = []
+        # Compact format: {"city": ["suggestion1", "suggestion2", ...]}
+        for query_key, suggestions in li_data.items():
+            if isinstance(suggestions, list) and suggestions:
+                rows.append({
+                    "query": query_key,
+                    "suggestions": json.dumps(suggestions),
+                    "scraped_at": "",
+                })
+
+        li_count = store.seed_linkedin_locations(rows)
+        logger.info("Seeded %d LinkedIn locations", li_count)

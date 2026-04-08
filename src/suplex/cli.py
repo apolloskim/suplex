@@ -210,20 +210,39 @@ def scrape_maps(query: str, location: str | None, max_results: int, apify_token:
 
 @scrape.command("linkedin")
 @click.argument("query")
-@click.option("--location", "-l", default=None, help="Location filter")
-@click.option("--max-results", "-n", default=50, help="Max results")
+@click.option("--location", "-l", default=None, help="Location (city, state, or country — auto-tiled)")
+@click.option("--titles", "-t", default=None, help="Job titles (comma-separated)")
+@click.option("--companies", "-c", default=None, help="Current companies (comma-separated LinkedIn URLs)")
+@click.option("--industries", default=None, help="Industry IDs (comma-separated)")
+@click.option("--mode", "-m", type=click.Choice(["short", "full", "full_with_email"]), default="short")
+@click.option("--max-results", "-n", default=0, help="Max results (0 = exhaust)")
 @click.option("--apify-token", envvar="APIFY_TOKEN", default=None)
-def scrape_linkedin(query: str, location: str | None, max_results: int, apify_token: str | None) -> None:
+def scrape_linkedin(
+    query: str, location: str | None, titles: str | None, companies: str | None,
+    industries: str | None, mode: str, max_results: int, apify_token: str | None,
+) -> None:
     """Scrape LinkedIn for people leads."""
+    from suplex.config import Config
     from suplex.scraper.coordinator import ScrapeCoordinator
 
+    token = apify_token or Config.load().apify_token
     store = LeadStore()
-    coord = ScrapeCoordinator(store=store, apify_token=apify_token)
+    coord = ScrapeCoordinator(store=store, apify_token=token)
+
+    extra: dict = {"mode": mode}
+    if titles:
+        extra["job_titles"] = [t.strip() for t in titles.split(",")]
+    if companies:
+        extra["current_companies"] = [c.strip() for c in companies.split(",")]
+    if industries:
+        extra["industries"] = [i.strip() for i in industries.split(",")]
+
     target = ScrapeTarget(
         source=LeadSource.LINKEDIN,
         query=query,
         location=location,
         max_results=max_results,
+        extra=extra,
     )
     leads = asyncio.run(coord.run([target]))
     click.echo(json.dumps([l.model_dump() for l in leads], default=str, indent=2))

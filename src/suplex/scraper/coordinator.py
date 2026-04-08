@@ -13,6 +13,7 @@ from suplex.geo.tiles import resolve_tiles
 from suplex.models import Lead, ScrapeTarget, LeadSource
 from suplex.scraper.apify_scraper import ApifyScraper
 from suplex.scraper.gmaps_scraper import GMapsScraper
+from suplex.scraper.linkedin_scraper import LinkedInScraper
 from suplex.scraper.site_scraper import SiteScraper
 from suplex.store.db import LeadStore
 
@@ -43,6 +44,7 @@ class ScrapeCoordinator:
         self.site_scraper = SiteScraper()
         self.apify_scraper = ApifyScraper(token=apify_token)
         self.gmaps_scraper = GMapsScraper()
+        self.linkedin_scraper = LinkedInScraper(token=apify_token, store=store)
         self._has_apify = bool(apify_token)
 
     async def run(self, targets: list[ScrapeTarget]) -> list[Lead]:
@@ -51,7 +53,8 @@ class ScrapeCoordinator:
         Google Maps targets with state/country locations are auto-expanded into
         city-level tiles via the geo tile planner.
         """
-        # Expand any Google Maps targets that cover a state/country into tiles.
+        # Expand Google Maps and LinkedIn targets into city tiles.
+        # Google Maps tiles use coordinates. LinkedIn tiles use autocomplete strings.
         expanded: list[ScrapeTarget] = []
         for target in targets:
             if target.source in (LeadSource.GOOGLE_MAPS, LeadSource.LINKEDIN) and target.location:
@@ -116,8 +119,11 @@ class ScrapeCoordinator:
                         target,
                         callback,
                     )
+            elif target.source == LeadSource.LINKEDIN:
+                async with self.api_limiter:
+                    leads = await self.linkedin_scraper.scrape(target)
+                    await callback(leads)
             else:
-                # LinkedIn or other Apify sources.
                 async with self.api_limiter:
                     leads = await self.apify_scraper.scrape(target)
                     await callback(leads)
