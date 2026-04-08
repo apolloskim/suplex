@@ -120,14 +120,13 @@ def _linkedin_tiles(
     """
     location_lower = location.strip().lower()
 
-    # Look up in geo map.
+    # Look up in geo map — try both accented and stripped forms, take the larger set.
     autocompletes = store.get_linkedin_geo(location_lower)
-
-    if not autocompletes:
-        # Try without accents.
-        normalized = _normalize_accent(location_lower)
-        if normalized != location_lower:
-            autocompletes = store.get_linkedin_geo(normalized)
+    normalized = _normalize_accent(location_lower)
+    if normalized != location_lower:
+        alt = store.get_linkedin_geo(normalized)
+        if len(alt) > len(autocompletes):
+            autocompletes = alt
 
     if not autocompletes:
         # Passthrough — the location as-is. The actor will attempt its own resolution.

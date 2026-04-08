@@ -34,6 +34,13 @@ COUNTRY_ALIASES = {
 }
 
 
+def _strip_accents(s: str) -> str:
+    import unicodedata
+    return "".join(
+        c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn"
+    )
+
+
 def build_geo_map(store: LeadStore) -> int:
     """Build the geo map from existing linkedin_locations data in SQLite."""
     pairs: set[tuple[str, str]] = set()
@@ -42,11 +49,18 @@ def build_geo_map(store: LeadStore) -> int:
         rows = conn.execute("SELECT query, suggestions FROM linkedin_locations").fetchall()
 
     for row in rows:
+        city_name = row["query"]
         suggestions = json.loads(row["suggestions"])
         for autocomplete in suggestions:
             keys = _extract_keys(autocomplete)
             for key in keys:
                 pairs.add((key, autocomplete))
+
+            # Also map the original city name (and its accent-stripped form) to each autocomplete.
+            pairs.add((city_name.lower(), autocomplete))
+            stripped = _strip_accents(city_name.lower())
+            if stripped != city_name.lower():
+                pairs.add((stripped, autocomplete))
 
     rows_list = list(pairs)
     count = store.seed_linkedin_geo_map(rows_list)
