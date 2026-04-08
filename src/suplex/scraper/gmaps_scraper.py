@@ -2,12 +2,19 @@
 
 Ported from suplex-desktop's googleMapsPlaywright.ts.
 Searches Google Maps, scrolls results, extracts business details.
+
+Cooldown/pacing adapted from suplex-desktop:
+- Random delays between place visits (2-5s, every 8th = 7-15s)
+- Random delays between feed scrolls (1-3s, every 14th = 3-8s)
+- Post-navigation dwell (0.5-1.3s)
+- Daily limit: 500 searches (configurable)
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import re
 from typing import Any
 from urllib.parse import quote_plus
@@ -21,6 +28,7 @@ logger = logging.getLogger(__name__)
 MAPS_URL = "https://www.google.com/maps/search/{query}"
 MAPS_COORD_URL = "https://www.google.com/maps/search/{query}/@{lat},{lng},{zoom}z"
 DEFAULT_ZOOM = 13  # ~10km radius viewport.
+DAILY_LIMIT = 500  # Max place visits per day via Playwright.
 
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -45,9 +53,25 @@ REVIEW_COUNT_RE = re.compile(r"([\d,]+)\s*review", re.IGNORECASE)
 
 
 class GMapsScraper:
-    """Scrape Google Maps search results via Playwright."""
+    """Scrape Google Maps search results via Playwright.
+
+    Daily limit: 500 place visits per day (configurable via DAILY_LIMIT).
+    Pacing: random delays between visits, longer pauses every 8th visit.
+    """
+
+    _daily_count: int = 0
+    _daily_date: str = ""
 
     async def scrape(self, target: ScrapeTarget) -> list[Lead]:
+        # Check daily limit.
+        from datetime import date
+        today = date.today().isoformat()
+        if self._daily_date != today:
+            GMapsScraper._daily_date = today
+            GMapsScraper._daily_count = 0
+        if self._daily_count >= DAILY_LIMIT:
+            logger.warning("Daily Playwright limit reached (%d). Skipping.", DAILY_LIMIT)
+            return []
         query = target.query
         max_results = target.max_results
 
@@ -90,7 +114,7 @@ class GMapsScraper:
             else:
                 url = MAPS_URL.format(query=quote_plus(query))
             await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-            await page.wait_for_timeout(3000)
+            await page.wait_for_timeout(random.randint(2000, 4000))
 
             # Accept cookies/consent if present.
             await self._dismiss_consent(page)
@@ -106,18 +130,25 @@ class GMapsScraper:
             place_urls = await self._scroll_and_collect(page, max_results)
             logger.info("Found %d place links", len(place_urls))
 
-            # Visit each place and extract details.
-            import random
+            # Visit each place with human-like pacing.
             for i, place_url in enumerate(place_urls):
                 try:
+                    # Pacing: every 8th place gets a longer pause.
                     if i > 0:
-                        await page.wait_for_timeout(random.randint(2000, 5000))
+                        if (i + 1) % 8 == 0:
+                            await page.wait_for_timeout(random.randint(7000, 15000))
+                        else:
+                            await page.wait_for_timeout(random.randint(2000, 5000))
+                    if GMapsScraper._daily_count >= DAILY_LIMIT:
+                        logger.warning("Daily limit reached mid-scrape (%d). Stopping.", DAILY_LIMIT)
+                        break
                     detail = await self._extract_place(page, place_url)
                     if detail:
                         lead = self._to_lead(detail, query)
                         leads.append(lead)
+                        GMapsScraper._daily_count += 1
                         if (i + 1) % 10 == 0:
-                            logger.info("Extracted %d/%d places", i + 1, len(place_urls))
+                            logger.info("Extracted %d/%d places (daily: %d/%d)", i + 1, len(place_urls), self._daily_count, DAILY_LIMIT)
                 except Exception:
                     logger.debug("Failed to extract place: %s", place_url, exc_info=True)
 
@@ -179,10 +210,14 @@ class GMapsScraper:
             if target_count > 0 and len(seen_urls) >= target_count:
                 break
 
-            # Scroll the feed.
+            # Scroll the feed with pacing.
             prev_count = len(seen_urls)
+            scroll_count = len(seen_urls)
             await feed.evaluate("el => el.scrollBy(0, el.clientHeight * 0.8)")
-            await page.wait_for_timeout(1500)
+            if scroll_count > 0 and scroll_count % 14 == 0:
+                await page.wait_for_timeout(random.randint(3200, 7600))
+            else:
+                await page.wait_for_timeout(random.randint(1200, 3200))
 
             # Check for "end of results" text.
             end_marker = page.locator("text=You've reached the end of the list")
