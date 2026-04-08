@@ -45,12 +45,15 @@ def launch_scrape_job(
     if extra_args:
         cmd.extend(extra_args)
 
-    # Inject job_id via env var — the CLI reads it and passes to coordinator.
-    env = {**os.environ, "SUPLEX_JOB_ID": job_id}
+    # Pre-create job row with meta so resume can reconstruct the command.
+    meta = {"type": "scrape", "source": source, "query": query, "location": location}
+    if extra_args:
+        meta["extra_args"] = extra_args
+    store = LeadStore()
+    store.create_job(job_id, "scrape", total=0, meta=meta)
 
-    return _launch(job_id, cmd, env, log_path, meta={
-        "type": "scrape", "source": source, "query": query, "location": location,
-    })
+    env = {**os.environ, "SUPLEX_JOB_ID": job_id}
+    return _launch(job_id, cmd, env, log_path, meta=meta)
 
 
 def launch_enrich_job(

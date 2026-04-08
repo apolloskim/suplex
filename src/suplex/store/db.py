@@ -493,7 +493,8 @@ class LeadStore:
                 INSERT INTO jobs (id, type, status, total, completed, leads_count, started_at, meta)
                 VALUES (?, ?, 'running', ?, 0, 0, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
-                    status='running', total=excluded.total, started_at=excluded.started_at
+                    status='running', total=CASE WHEN excluded.total > 0 THEN excluded.total ELSE jobs.total END,
+                    started_at=excluded.started_at
                 """,
                 (job_id, job_type, total, datetime.utcnow().isoformat(), json.dumps(meta or {})),
             )
