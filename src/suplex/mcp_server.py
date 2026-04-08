@@ -298,6 +298,75 @@ async def list_tools() -> list[Tool]:
             description="Get lead count statistics grouped by source and verification status.",
             inputSchema={"type": "object", "properties": {}},
         ),
+        Tool(
+            name="run_background_job",
+            description=(
+                "Launch a scrape or enrich job in the background. Returns immediately with "
+                "a job_id. The job runs as a detached process — survives terminal closure. "
+                "Use get_job_status to check progress."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "type": {
+                        "type": "string",
+                        "enum": ["scrape_maps", "scrape_linkedin", "enrich"],
+                        "description": "Job type",
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Search query (for scrape jobs)",
+                    },
+                    "location": {
+                        "type": "string",
+                        "description": "Location (for scrape jobs) — city, state, or country",
+                    },
+                    "titles": {
+                        "type": "string",
+                        "description": "Job titles, comma-separated (for LinkedIn scrape)",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max leads (for enrich jobs)",
+                        "default": 100,
+                    },
+                    "linkedin_posts": {
+                        "type": "integer",
+                        "description": "LinkedIn posts per lead (for enrich jobs)",
+                        "default": 1,
+                    },
+                },
+                "required": ["type"],
+            },
+        ),
+        Tool(
+            name="get_job_status",
+            description="Check progress of a background job. Returns completed/total counts and status.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "description": "The job ID returned by run_background_job",
+                    },
+                },
+                "required": ["job_id"],
+            },
+        ),
+        Tool(
+            name="list_jobs",
+            description="List recent background jobs with their status and progress.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "enum": ["running", "done", "failed", "pending"],
+                        "description": "Filter by status",
+                    },
+                },
+            },
+        ),
     ]
 
 
@@ -415,6 +484,30 @@ async def _dispatch(name: str, args: dict) -> dict:
                     stats[f"{src.value}/{vs.value}"] = count
         stats["total"] = store.count()
         return stats
+
+    elif name == "run_background_job":
+        from suplex.jobs import launch_scrape_job, launch_enrich_job
+        job_type = args["type"]
+        if job_type == "scrape_maps":
+            extra = []
+            return launch_scrape_job("maps", args.get("query", ""), args.get("location", ""), extra_args=extra)
+        elif job_type == "scrape_linkedin":
+            extra = []
+            if args.get("titles"):
+                extra.extend(["-t", args["titles"]])
+            return launch_scrape_job("linkedin", args.get("query", ""), args.get("location", ""), extra_args=extra)
+        elif job_type == "enrich":
+            return launch_enrich_job(limit=args.get("limit", 100), linkedin_posts=args.get("linkedin_posts", 1))
+        else:
+            raise ValueError(f"Unknown job type: {job_type}")
+
+    elif name == "get_job_status":
+        from suplex.jobs import get_job_status as _get_status
+        return _get_status(args["job_id"])
+
+    elif name == "list_jobs":
+        from suplex.jobs import list_jobs as _list
+        return _list(status=args.get("status"))
 
     else:
         raise ValueError(f"Unknown tool: {name}")

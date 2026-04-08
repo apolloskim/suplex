@@ -55,7 +55,7 @@ class EnrichmentPipeline:
         self.apify_token = apify_token or os.environ.get("APIFY_TOKEN", "")
         self.linkedin_posts = linkedin_posts
 
-    async def run(self, limit: int = 100) -> dict:
+    async def run(self, limit: int = 100, *, job_id: str | None = None) -> dict:
         """Enrich up to `limit` unenriched leads. Returns stats + setup messages."""
         leads = self.store.get_unenriched(limit=limit)
         if not leads:
@@ -64,20 +64,33 @@ class EnrichmentPipeline:
 
         logger.info("Enriching %d leads", len(leads))
 
+        if job_id:
+            self.store.create_job(job_id, "enrich", total=len(leads))
+
         stats: dict = {"processed": 0, "sites_scraped": 0, "emails_verified": 0, "emails_found": 0, "linkedin_posts": 0}
 
-        for lead in leads:
-            try:
-                enrichment = await self._enrich_one(lead, stats)
-                if lead.id:
-                    self.store.update_enrichment(lead.id, enrichment)
-                stats["processed"] += 1
-                if stats["processed"] % 10 == 0:
-                    logger.info("Enriched %d/%d leads", stats["processed"], len(leads))
-            except Exception:
-                logger.exception("Failed to enrich lead %s (id=%s)", lead.name, lead.id)
+        try:
+            for lead in leads:
+                try:
+                    enrichment = await self._enrich_one(lead, stats)
+                    if lead.id:
+                        self.store.update_enrichment(lead.id, enrichment)
+                    stats["processed"] += 1
+                    if job_id and stats["processed"] % 5 == 0:
+                        self.store.update_job_progress(job_id, stats["processed"], stats["processed"])
+                    if stats["processed"] % 10 == 0:
+                        logger.info("Enriched %d/%d leads", stats["processed"], len(leads))
+                except Exception:
+                    logger.exception("Failed to enrich lead %s (id=%s)", lead.name, lead.id)
 
-        # Include setup messages from verifier so agent can relay to user.
+            if job_id:
+                self.store.update_job_progress(job_id, len(leads), stats["processed"])
+                self.store.finish_job(job_id, "done")
+        except Exception as e:
+            if job_id:
+                self.store.finish_job(job_id, "failed", error=str(e))
+            raise
+
         if self.verifier.setup_log:
             stats["setup_messages"] = self.verifier.setup_log
 

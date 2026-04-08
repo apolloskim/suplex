@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import sys
 
 import click
@@ -194,18 +195,21 @@ def scrape() -> None:
 @click.option("--apify-token", envvar="APIFY_TOKEN", default=None)
 def scrape_maps(query: str, location: str | None, max_results: int, apify_token: str | None) -> None:
     """Scrape Google Maps for business leads."""
+    from suplex.config import Config
     from suplex.scraper.coordinator import ScrapeCoordinator
 
+    token = apify_token or Config.load().apify_token
     store = LeadStore()
-    coord = ScrapeCoordinator(store=store, apify_token=apify_token)
+    coord = ScrapeCoordinator(store=store, apify_token=token)
     target = ScrapeTarget(
         source=LeadSource.GOOGLE_MAPS,
         query=query,
         location=location,
         max_results=max_results,
     )
-    leads = asyncio.run(coord.run([target]))
-    click.echo(json.dumps([l.model_dump() for l in leads], default=str, indent=2))
+    job_id = os.environ.get("SUPLEX_JOB_ID")
+    leads = asyncio.run(coord.run([target], job_id=job_id))
+    click.echo(json.dumps({"leads": len(leads)}, indent=2))
 
 
 @scrape.command("linkedin")
@@ -244,8 +248,9 @@ def scrape_linkedin(
         max_results=max_results,
         extra=extra,
     )
-    leads = asyncio.run(coord.run([target]))
-    click.echo(json.dumps([l.model_dump() for l in leads], default=str, indent=2))
+    job_id = os.environ.get("SUPLEX_JOB_ID")
+    leads = asyncio.run(coord.run([target], job_id=job_id))
+    click.echo(json.dumps({"leads": len(leads)}, indent=2))
 
 
 @scrape.command("website")
@@ -312,7 +317,8 @@ def enrich(limit: int, linkedin_posts: int, apify_token: str | None) -> None:
             apify_token=token,
             linkedin_posts=linkedin_posts,
         )
-        stats = await pipeline.run(limit=limit)
+        job_id = os.environ.get("SUPLEX_JOB_ID")
+        stats = await pipeline.run(limit=limit, job_id=job_id)
         click.echo(json.dumps(stats, indent=2))
 
     asyncio.run(_run())
@@ -377,6 +383,75 @@ def stats() -> None:
                 data[f"{src.value}/{vs.value}"] = count
     data["total"] = store.count()
     click.echo(json.dumps(data, indent=2))
+
+
+# ---------------------------------------------------------------------------
+# run (background jobs)
+# ---------------------------------------------------------------------------
+
+
+@cli.group()
+def run() -> None:
+    """Launch background jobs (scrape/enrich) that survive terminal closure."""
+
+
+@run.command("scrape-maps")
+@click.argument("query")
+@click.option("--location", "-l", required=True, help="Location")
+@click.option("--max-results", "-n", default=0, help="Max results per tile (0=exhaust)")
+def run_scrape_maps(query: str, location: str, max_results: int) -> None:
+    """Launch Google Maps scrape in background."""
+    from suplex.jobs import launch_scrape_job
+    extra = ["-n", str(max_results)] if max_results > 0 else []
+    result = launch_scrape_job("maps", query, location, max_results=max_results, extra_args=extra)
+    click.echo(json.dumps(result, indent=2))
+
+
+@run.command("scrape-linkedin")
+@click.argument("query")
+@click.option("--location", "-l", required=True, help="Location")
+@click.option("--titles", "-t", default=None, help="Job titles (comma-separated)")
+def run_scrape_linkedin(query: str, location: str, titles: str | None) -> None:
+    """Launch LinkedIn scrape in background."""
+    from suplex.jobs import launch_scrape_job
+    extra = []
+    if titles:
+        extra.extend(["-t", titles])
+    result = launch_scrape_job("linkedin", query, location, extra_args=extra)
+    click.echo(json.dumps(result, indent=2))
+
+
+@run.command("enrich")
+@click.option("--limit", "-n", default=100, help="Max leads")
+@click.option("--linkedin-posts", "-lp", default=1, help="Posts per lead")
+def run_enrich(limit: int, linkedin_posts: int) -> None:
+    """Launch enrichment in background."""
+    from suplex.jobs import launch_enrich_job
+    result = launch_enrich_job(limit=limit, linkedin_posts=linkedin_posts)
+    click.echo(json.dumps(result, indent=2))
+
+
+@cli.command("jobs")
+@click.option("--status", "-s", type=click.Choice(["running", "done", "failed", "pending"]), default=None)
+def list_jobs_cmd(status: str | None) -> None:
+    """List recent jobs."""
+    from suplex.jobs import list_jobs
+    jobs = list_jobs(status=status)
+    if not jobs:
+        click.echo("No jobs found.", err=True)
+        return
+    for j in jobs:
+        pct = f"{j['completed']}/{j['total']}" if j["total"] > 0 else "—"
+        click.echo(f"  {j['id']}  {j['status']:8s}  {j['type']:8s}  {pct:>12s}  leads={j['leads_count']}  {j.get('started_at', '')[:19]}")
+
+
+@cli.command("job")
+@click.argument("job_id")
+def job_status_cmd(job_id: str) -> None:
+    """Check status of a specific job."""
+    from suplex.jobs import get_job_status
+    result = get_job_status(job_id)
+    click.echo(json.dumps(result, indent=2))
 
 
 # ---------------------------------------------------------------------------

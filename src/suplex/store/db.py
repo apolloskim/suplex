@@ -71,6 +71,21 @@ CREATE TABLE IF NOT EXISTS linkedin_geo_map (
 
 CREATE INDEX IF NOT EXISTS idx_linkedin_geo_key ON linkedin_geo_map(lookup_key);
 
+CREATE TABLE IF NOT EXISTS jobs (
+    id TEXT PRIMARY KEY,
+    type TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    total INTEGER NOT NULL DEFAULT 0,
+    completed INTEGER NOT NULL DEFAULT 0,
+    leads_count INTEGER NOT NULL DEFAULT 0,
+    started_at TEXT,
+    finished_at TEXT,
+    error TEXT,
+    meta TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
+
 CREATE TABLE IF NOT EXISTS sender_profile (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     website TEXT NOT NULL,
@@ -393,6 +408,63 @@ class LeadStore:
 
     # ------------------------------------------------------------------
     # LinkedIn geo map
+    # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Jobs
+    # ------------------------------------------------------------------
+
+    def create_job(self, job_id: str, job_type: str, total: int, meta: dict | None = None) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO jobs (id, type, status, total, completed, leads_count, started_at, meta)
+                VALUES (?, ?, 'running', ?, 0, 0, ?, ?)
+                """,
+                (job_id, job_type, total, datetime.utcnow().isoformat(), json.dumps(meta or {})),
+            )
+
+    def update_job_progress(self, job_id: str, completed: int, leads_count: int) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE jobs SET completed = ?, leads_count = ? WHERE id = ?",
+                (completed, leads_count, job_id),
+            )
+
+    def finish_job(self, job_id: str, status: str = "done", error: str | None = None) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE jobs SET status = ?, finished_at = ?, error = ? WHERE id = ?",
+                (status, datetime.utcnow().isoformat(), error, job_id),
+            )
+
+    def get_job(self, job_id: str) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+            if row:
+                d = dict(row)
+                d["meta"] = json.loads(d["meta"]) if d["meta"] else {}
+                return d
+        return None
+
+    def list_jobs(self, status: str | None = None, limit: int = 20) -> list[dict]:
+        with self._conn() as conn:
+            if status:
+                rows = conn.execute(
+                    "SELECT * FROM jobs WHERE status = ? ORDER BY started_at DESC LIMIT ?",
+                    (status, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM jobs ORDER BY started_at DESC LIMIT ?", (limit,)
+                ).fetchall()
+            results = []
+            for row in rows:
+                d = dict(row)
+                d["meta"] = json.loads(d["meta"]) if d["meta"] else {}
+                results.append(d)
+            return results
+
     # ------------------------------------------------------------------
 
     def linkedin_geo_map_seeded(self) -> bool:
