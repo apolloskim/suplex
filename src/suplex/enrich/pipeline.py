@@ -198,9 +198,10 @@ class EnrichmentPipeline:
                     candidates.insert(0, detected)
 
         if is_catch_all:
-            # Can't verify — return the most likely candidate unverified.
-            logger.debug("Domain %s is catch-all — returning best guess unverified", domain)
-            return candidates[0] if candidates else None
+            # Catch-all domain: SMTP verification is useless for guessed emails.
+            # Do NOT return a guess — it could be anyone or no one.
+            logger.debug("Domain %s is catch-all — skipping email guessing (unreliable)", domain)
+            return None
 
         # Verify each candidate.
         for email in candidates:

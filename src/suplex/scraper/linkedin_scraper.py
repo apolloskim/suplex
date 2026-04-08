@@ -215,30 +215,46 @@ class LinkedInScraper:
         last = item.get("lastName", "") or ""
         name = f"{first} {last}".strip() or item.get("fullName")
 
+        # Extract company + title from currentPositions (nested in short mode).
         current_company = item.get("currentCompany") or item.get("companyName", "")
         current_title = item.get("currentPosition") or item.get("headline", "")
+        positions = item.get("currentPositions") or item.get("positions") or []
+        if positions and isinstance(positions, list) and positions[0]:
+            pos = positions[0]
+            if not current_company:
+                current_company = pos.get("companyName", "")
+            if not current_title:
+                current_title = pos.get("title", "")
+
+        # Location.
         raw_loc = item.get("location") or item.get("locationText", "")
         if isinstance(raw_loc, dict):
             lead_location = raw_loc.get("linkedinText", "") or raw_loc.get("default", "") or ""
         else:
             lead_location = raw_loc or ""
 
+        # LinkedIn URL.
         public_id = item.get("publicIdentifier") or item.get("public_identifier", "")
         li_url = item.get("linkedinUrl") or item.get("linkedin_url", "")
         if not li_url and public_id:
             li_url = f"https://www.linkedin.com/in/{public_id}"
 
+        # Email (full+email mode).
         email = item.get("email") or item.get("personalEmail", "")
 
+        # Website.
         websites = item.get("companyWebsites") or item.get("websites") or []
         website = websites[0] if websites else item.get("companyWebsite", "")
+
+        # Phone.
+        phone = item.get("phone") or item.get("phoneNumber", "")
 
         return Lead(
             name=name,
             email=email or None,
             company=current_company,
             title=current_title,
-            phone=item.get("phone"),
+            phone=phone or None,
             location=lead_location,
             linkedin_url=li_url,
             website=website or None,
