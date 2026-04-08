@@ -3,10 +3,11 @@
 ## Claude Code
 
 - Use the suplex MCP server for all scraping/enrichment operations.
-- **Always check `get_apify_budget` before launching Apify jobs** (LinkedIn, Google Maps with -s apify).
-- For long-running jobs, use `run_background_job` or `run_batch_job` and poll with `get_job_status` / `get_batch_status`.
-- Read `clean_text` and `raw_data` from leads — you are the AI layer, no separate LLM call needed.
-- LinkedIn leads have pre-verified emails, rich profile data (experience, education, skills, about), and posts (after enrichment). Use these for personalization.
-- When the user describes multiple queries/sources, decompose into a batch job.
-- Default to Playwright for Google Maps (free). Only use Apify when user asks for scale or speed.
-- Google Maps leads include reviews (default 5 per place) — use for conversation hooks.
+- **Always check `get_apify_budget` before Apify jobs.** If over budget, use Playwright for Maps.
+- **Always pass `-n` for testing.** Never exhaust without user confirmation.
+- For multiple queries/sources, use `run_batch_job` — watchdog auto-advances, no polling needed.
+- Scraping auto-enriches by default. Use `--no-enrich` only when user wants scrape-only.
+- Read `raw_data` and `enrichment_data` from leads — you are the AI layer.
+- LinkedIn leads have pre-verified emails + full profile (experience, education, skills, about, posts after enrichment).
+- Google Maps leads have reviews (default 5 per place) — use for conversation hooks.
+- For killed/failed jobs, use `resume_job` to pick up where it left off.

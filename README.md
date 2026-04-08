@@ -22,17 +22,20 @@ suplex setup
 
 - **Scrape** leads from Google Maps (free via Playwright or paid via Apify) and LinkedIn (Apify)
 - **Enrich** with company website data, Google reviews, email verification, LinkedIn posts
+- **Auto-enrich** after every scrape by default
 - **Tile** across 241 countries — "Texas" becomes 1,025 city-level scrapes automatically
-- **Background jobs** with progress tracking, crash recovery, and batch execution
-- **MCP server** with 20 tools for AI agents (Claude Code, Codex, Copilot, Cursor)
+- **Resume** killed or failed jobs — picks up where it left off
+- **Batch** multiple queries with auto-advancing watchdog (no polling needed)
+- **Export** to CSV with source/status/enrichment filters
+- **Budget-aware** — blocks Apify jobs when over limit
+- **MCP server** with 20+ tools for AI agents (Claude Code, Codex, Copilot, Cursor)
 
 ## Quick start
 
 ```bash
-suplex setup                                              # one-time setup
-suplex scrape maps "dentist" -l "Austin, TX" -s playwright  # scrape Google Maps (free)
-suplex enrich                                               # enrich all leads
-suplex leads                                                # view results
+suplex setup
+suplex scrape maps "dentist" -l "Austin, TX" -s playwright -n 20
+suplex export -o dentists.csv
 ```
 
 ## For AI agents
@@ -40,7 +43,7 @@ suplex leads                                                # view results
 Suplex works as an MCP server and ships an agent skill:
 
 ```bash
-suplex serve    # start MCP server (stdio)
+suplex serve
 ```
 
-Or agents call it via CLI commands directly. See [SKILL.md](skills/suplex/SKILL.md) for the full agent workflow.
+See [SKILL.md](skills/suplex/SKILL.md) for the full agent workflow.
