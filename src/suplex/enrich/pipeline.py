@@ -153,8 +153,11 @@ class EnrichmentPipeline:
                 guessed = await self._find_email(lead, domain, site_emails)
                 if guessed and lead.id:
                     self.store.update_email(lead.id, guessed)
+                    # Guessed emails were already verified by _find_email (Reacher said valid).
+                    self.store.update_verification(lead.id, VerificationStatus.VALID)
                     enrichment["email_found"] = guessed
                     enrichment["email_source"] = "guessed"
+                    enrichment["email_verification"] = {"status": "valid", "reason": "verified_during_guessing"}
                     stats["emails_guessed"] += 1
 
         # Step 5: LinkedIn posts.
