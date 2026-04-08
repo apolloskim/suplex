@@ -39,7 +39,7 @@ class ScrapeCoordinator:
         browser_concurrency: int = DEFAULT_BROWSER_CONCURRENCY,
         api_concurrency: int = DEFAULT_API_CONCURRENCY,
         apify_token: str | None = None,
-        scraper: str = "auto",
+        scraper: str = "playwright",
         reviews_per_place: int = 5,
     ) -> None:
         self.store = store
@@ -63,20 +63,14 @@ class ScrapeCoordinator:
         expanded: list[ScrapeTarget] = []
         for target in targets:
             if target.source in (LeadSource.GOOGLE_MAPS, LeadSource.LINKEDIN) and target.location:
-                # Override tile scraper based on coordinator's scraper flag.
-                has_apify = self._has_apify and self._scraper != "playwright"
+                # Scraper is explicit: playwright or apify. No auto.
                 tiles = resolve_tiles(
                     target.query, target.location,
                     max_results_per_tile=target.max_results,
-                    source=target.source, has_apify=has_apify, store=self.store,
+                    source=target.source, has_apify=False, store=self.store,
                 )
-                # Apply scraper override to tiles.
-                if self._scraper == "playwright":
-                    for t in tiles:
-                        t.extra["tile_scraper"] = "playwright"
-                elif self._scraper == "apify":
-                    for t in tiles:
-                        t.extra["tile_scraper"] = "apify"
+                for t in tiles:
+                    t.extra["tile_scraper"] = self._scraper
 
                 # Filter tiles by --only / --exclude flags.
                 # Accepts: US state codes (WY), region names (Tokyo), country codes (JP).

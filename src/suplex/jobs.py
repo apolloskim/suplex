@@ -186,10 +186,11 @@ def _launch_child_job(child: dict) -> None:
         )
 
 
-def resume_job(job_id: str) -> dict:
+def resume_job(job_id: str, scraper_override: str | None = None) -> dict:
     """Resume a stopped/failed job. Relaunches the same command with the same job_id.
 
     The coordinator will skip already-done tiles via item_tasks.
+    scraper_override: switch from playwright to apify (or vice versa) on resume.
     """
     store = LeadStore()
     job = store.get_job(job_id)
@@ -224,8 +225,22 @@ def resume_job(job_id: str) -> dict:
         source = meta.get("source", "maps")
         query = meta.get("query", "")
         location = meta.get("location", "")
-        # Use saved extra_args to reconstruct the exact original command.
-        extra = meta.get("extra_args", [])
+        extra = list(meta.get("extra_args", []))
+        # Apply scraper override (e.g., switch playwright → apify on resume).
+        if scraper_override:
+            # Remove old -s flag from extra_args.
+            new_extra = []
+            skip_next = False
+            for arg in extra:
+                if skip_next:
+                    skip_next = False
+                    continue
+                if arg == "-s":
+                    skip_next = True
+                    continue
+                new_extra.append(arg)
+            new_extra.extend(["-s", scraper_override])
+            extra = new_extra
         launch_scrape_job(source, query, location, extra_args=extra, job_id=job_id)
     elif job_type == "enrich":
         launch_enrich_job(

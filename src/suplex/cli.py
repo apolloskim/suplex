@@ -267,7 +267,7 @@ def scrape() -> None:
 @click.argument("query")
 @click.option("--location", "-l", default=None, help="Location filter")
 @click.option("--max-results", "-n", default=0, help="Max results per tile (0=exhaust)")
-@click.option("--scraper", "-s", type=click.Choice(["auto", "playwright", "apify"]), default="auto", help="Force scraper: playwright (free) or apify (paid)")
+@click.option("--scraper", "-s", type=click.Choice(["playwright", "apify"]), default="playwright", help="Force scraper: playwright (free) or apify (paid)")
 @click.option("--reviews", "-r", default=5, help="Reviews per place (0=skip)")
 @click.option("--only", default=None, help="Only include these regions (comma-separated: states, regions, or country codes)")
 @click.option("--exclude", default=None, help="Exclude these regions (comma-separated: states, regions, or country codes)")
@@ -649,7 +649,7 @@ def run() -> None:
 @click.argument("query")
 @click.option("--location", "-l", required=True, help="Location")
 @click.option("--max-results", "-n", default=0, help="Max results per tile (0=exhaust)")
-@click.option("--scraper", "-s", type=click.Choice(["auto", "playwright", "apify"]), default="auto")
+@click.option("--scraper", "-s", type=click.Choice(["playwright", "apify"]), default="playwright")
 @click.option("--no-enrich", is_flag=True, default=False, help="Skip auto-enrichment")
 def run_scrape_maps(query: str, location: str, max_results: int, scraper: str, no_enrich: bool) -> None:
     """Launch Google Maps scrape + enrich in background."""
@@ -657,8 +657,7 @@ def run_scrape_maps(query: str, location: str, max_results: int, scraper: str, n
     extra = []
     if max_results > 0:
         extra.extend(["-n", str(max_results)])
-    if scraper != "auto":
-        extra.extend(["-s", scraper])
+    extra.extend(["-s", scraper])
     if no_enrich:
         extra.append("--no-enrich")
     result = launch_scrape_job("maps", query, location, max_results=max_results, extra_args=extra)
@@ -720,10 +719,14 @@ def job_status_cmd(job_id: str) -> None:
 
 @cli.command("resume")
 @click.argument("job_id")
-def resume_cmd(job_id: str) -> None:
-    """Resume a stopped or failed job. Picks up where it left off."""
+@click.option("--scraper", "-s", type=click.Choice(["playwright", "apify"]), default=None, help="Override scraper (e.g., switch from playwright to apify)")
+def resume_cmd(job_id: str, scraper: str | None) -> None:
+    """Resume a stopped or failed job. Picks up where it left off.
+
+    Use -s to switch scraper: e.g., hit 500 playwright limit, resume with apify.
+    """
     from suplex.jobs import resume_job
-    result = resume_job(job_id)
+    result = resume_job(job_id, scraper_override=scraper)
     click.echo(json.dumps(result, indent=2))
 
 
@@ -740,18 +743,3 @@ def serve() -> None:
     mcp_main()
 
 
-# ---------------------------------------------------------------------------
-# schedule
-# ---------------------------------------------------------------------------
-
-
-@cli.command()
-@click.argument("domain")
-@click.option("--cron", "-c", default="0 9 * * 1", help="Cron expression (default: Monday 9am)")
-@click.option("--preferences", "-p", default="", help="Target preferences")
-def schedule(domain: str, cron: str, preferences: str) -> None:
-    """Schedule recurring autonomous scrape runs."""
-    from suplex.scheduler.cron import start_scheduler
-
-    click.echo(f"Scheduling scrape for '{domain}' at cron '{cron}'", err=True)
-    start_scheduler(domain=domain, preferences=preferences, cron_expr=cron)
