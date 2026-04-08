@@ -78,33 +78,44 @@ class ScrapeCoordinator:
                     for t in tiles:
                         t.extra["tile_scraper"] = "apify"
 
-                # Filter tiles by --only / --exclude state flags.
-                only_states = target.extra.get("only_states")
-                exclude_states = target.extra.get("exclude_states")
-                if only_states or exclude_states:
-                    from suplex.geo.tiles import STATE_CODES
-                    # Build full state name set for matching LinkedIn autocomplete strings.
-                    _code_to_name = {v: k.title() for k, v in STATE_CODES.items() if len(k) > 2}
+                # Filter tiles by --only / --exclude flags.
+                # Accepts: US state codes (WY), region names (Tokyo), country codes (JP).
+                only_filter = target.extra.get("only_states")
+                exclude_filter = target.extra.get("exclude_states")
+                if only_filter or exclude_filter:
+                    import unicodedata
 
-                    def _tile_matches_state(tile: ScrapeTarget, state_codes: list[str]) -> bool:
-                        # Google Maps tiles have tile_state.
-                        ts = tile.extra.get("tile_state", "").upper()
-                        if ts and ts in state_codes:
+                    def _strip(s: str) -> str:
+                        return "".join(
+                            c for c in unicodedata.normalize("NFD", s.lower()) if unicodedata.category(c) != "Mn"
+                        )
+
+                    def _tile_matches(tile: ScrapeTarget, filters: list[str]) -> bool:
+                        normalized_filters = [_strip(f) for f in filters]
+
+                        # Match tile_state (accent-insensitive, substring).
+                        ts = _strip(tile.extra.get("tile_state", ""))
+                        for nf in normalized_filters:
+                            if nf and ts and (nf in ts or ts in nf or nf == ts):
+                                return True
+
+                        # Match tile_country code.
+                        tc = tile.extra.get("tile_country", "").upper()
+                        if tc in [f.upper() for f in filters]:
                             return True
-                        # LinkedIn tiles: check if location string contains the state name.
-                        loc = tile.location.lower() if tile.location else ""
-                        for code in state_codes:
-                            name = _code_to_name.get(code, "").lower()
-                            if name and name in loc:
+
+                        # Match location string (for LinkedIn autocomplete).
+                        loc = _strip(tile.location or "")
+                        for nf in normalized_filters:
+                            if nf and nf in loc:
                                 return True
-                            if f", {code.lower()}" in loc:
-                                return True
+
                         return False
 
-                    if only_states:
-                        tiles = [t for t in tiles if _tile_matches_state(t, only_states)]
-                    if exclude_states:
-                        tiles = [t for t in tiles if not _tile_matches_state(t, exclude_states)]
+                    if only_filter:
+                        tiles = [t for t in tiles if _tile_matches(t, only_filter)]
+                    if exclude_filter:
+                        tiles = [t for t in tiles if not _tile_matches(t, exclude_filter)]
 
                 expanded.extend(tiles)
             else:

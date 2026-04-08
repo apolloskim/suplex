@@ -269,8 +269,8 @@ def scrape() -> None:
 @click.option("--max-results", "-n", default=0, help="Max results per tile (0=exhaust)")
 @click.option("--scraper", "-s", type=click.Choice(["auto", "playwright", "apify"]), default="auto", help="Force scraper: playwright (free) or apify (paid)")
 @click.option("--reviews", "-r", default=5, help="Reviews per place (0=skip)")
-@click.option("--only", default=None, help="Only include these states (comma-separated, e.g. CA,TX,NY)")
-@click.option("--exclude", default=None, help="Exclude these states (comma-separated, e.g. WY,VT)")
+@click.option("--only", default=None, help="Only include these regions (comma-separated: states, regions, or country codes)")
+@click.option("--exclude", default=None, help="Exclude these regions (comma-separated: states, regions, or country codes)")
 @click.option("--enrich/--no-enrich", default=True, help="Auto-enrich after scraping (default: yes)")
 @click.option("--apify-token", envvar="APIFY_TOKEN", default=None)
 def scrape_maps(query: str, location: str | None, max_results: int, scraper: str, reviews: int, only: str | None, exclude: str | None, enrich: bool, apify_token: str | None) -> None:
