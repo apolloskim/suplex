@@ -107,8 +107,11 @@ class GMapsScraper:
             logger.info("Found %d place links", len(place_urls))
 
             # Visit each place and extract details.
+            import random
             for i, place_url in enumerate(place_urls):
                 try:
+                    if i > 0:
+                        await page.wait_for_timeout(random.randint(2000, 5000))
                     detail = await self._extract_place(page, place_url)
                     if detail:
                         lead = self._to_lead(detail, query)
