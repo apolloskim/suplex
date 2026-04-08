@@ -27,7 +27,9 @@ CREATE TABLE IF NOT EXISTS leads (
     raw_data TEXT DEFAULT '{}',
     scraped_at TEXT NOT NULL,
     verification_status TEXT DEFAULT 'pending',
-    verified_at TEXT
+    verified_at TEXT,
+    enriched_at TEXT,
+    enrichment_data TEXT DEFAULT '{}'
 );
 
 CREATE INDEX IF NOT EXISTS idx_leads_email ON leads(email);
@@ -188,6 +190,28 @@ class LeadStore:
             conn.execute(
                 "UPDATE leads SET verification_status = ?, verified_at = ? WHERE id = ?",
                 (status.value, datetime.utcnow().isoformat(), lead_id),
+            )
+
+    def get_unenriched(self, limit: int = 100) -> list[Lead]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM leads WHERE enriched_at IS NULL ORDER BY scraped_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            return [self._row_to_lead(row) for row in rows]
+
+    def update_enrichment(self, lead_id: int, enrichment_data: dict) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE leads SET enriched_at = ?, enrichment_data = ? WHERE id = ?",
+                (datetime.utcnow().isoformat(), json.dumps(enrichment_data, default=str), lead_id),
+            )
+
+    def update_email(self, lead_id: int, email: str) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE leads SET email = ? WHERE id = ?",
+                (email, lead_id),
             )
 
     def count(

@@ -230,6 +230,30 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="enrich_leads",
+            description=(
+                "Enrich unenriched leads. For each lead: scrapes their website for rich "
+                "business data, verifies their email, guesses email if missing (name+domain "
+                "permutations), and optionally fetches latest LinkedIn posts. "
+                "Runs independently from scraping — picks up all unenriched leads."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max leads to enrich in this batch",
+                        "default": 100,
+                    },
+                    "linkedin_posts": {
+                        "type": "integer",
+                        "description": "Number of LinkedIn posts to fetch per lead (0=skip)",
+                        "default": 1,
+                    },
+                },
+            },
+        ),
+        Tool(
             name="verify_emails",
             description=(
                 "Verify emails in the database. Runs syntax, DNS/MX, SMTP (Reacher), "
@@ -354,6 +378,16 @@ async def _dispatch(name: str, args: dict) -> dict:
             "leads_scraped": len(leads),
             "leads_preview": [l.model_dump() for l in leads[:10]],
         }
+
+    elif name == "enrich_leads":
+        from suplex.enrich.pipeline import EnrichmentPipeline
+        config = Config.load()
+        pipeline = EnrichmentPipeline(
+            store=store,
+            apify_token=config.apify_token,
+            linkedin_posts=args.get("linkedin_posts", 1),
+        )
+        return await pipeline.run(limit=args.get("limit", 100))
 
     elif name == "verify_emails":
         limit = args.get("limit", 50)

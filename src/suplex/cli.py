@@ -292,6 +292,33 @@ def plan(domain: str, preferences: str, execute: bool, apify_token: str | None) 
 
 
 # ---------------------------------------------------------------------------
+# enrich
+# ---------------------------------------------------------------------------
+
+
+@cli.command()
+@click.option("--limit", "-n", default=100, help="Max leads to enrich")
+@click.option("--linkedin-posts", "-lp", default=1, help="LinkedIn posts per lead (0=skip)")
+@click.option("--apify-token", envvar="APIFY_TOKEN", default=None)
+def enrich(limit: int, linkedin_posts: int, apify_token: str | None) -> None:
+    """Enrich unenriched leads: site scrape + email verify + email guess + LinkedIn posts."""
+    from suplex.config import Config
+    from suplex.enrich.pipeline import EnrichmentPipeline
+
+    token = apify_token or Config.load().apify_token
+
+    async def _run() -> None:
+        pipeline = EnrichmentPipeline(
+            apify_token=token,
+            linkedin_posts=linkedin_posts,
+        )
+        stats = await pipeline.run(limit=limit)
+        click.echo(json.dumps(stats, indent=2))
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
 # verify
 # ---------------------------------------------------------------------------
 
