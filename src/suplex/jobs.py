@@ -221,13 +221,8 @@ def resume_job(job_id: str) -> dict:
         source = meta.get("source", "maps")
         query = meta.get("query", "")
         location = meta.get("location", "")
-        extra = []
-        if meta.get("scraper"):
-            extra.extend(["-s", meta["scraper"]])
-        if meta.get("titles"):
-            extra.extend(["-t", meta["titles"]])
-        if meta.get("max_results", 0) > 0:
-            extra.extend(["-n", str(meta["max_results"])])
+        # Use saved extra_args to reconstruct the exact original command.
+        extra = meta.get("extra_args", [])
         launch_scrape_job(source, query, location, extra_args=extra, job_id=job_id)
     elif job_type == "enrich":
         launch_enrich_job(
