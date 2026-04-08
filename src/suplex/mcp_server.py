@@ -434,6 +434,41 @@ async def list_tools() -> list[Tool]:
                 },
             },
         ),
+        Tool(
+            name="get_apify_budget",
+            description=(
+                "Check Apify credit usage and remaining budget. "
+                "Call this BEFORE launching Apify jobs (LinkedIn, Google Maps with apify scraper) "
+                "to ensure there's enough budget. Returns used/remaining USD and active runs."
+            ),
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="estimate_job_cost",
+            description=(
+                "Estimate cost of a scrape job before running it. "
+                "Returns estimated pages, profiles, and USD cost."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "type": {
+                        "type": "string",
+                        "enum": ["linkedin", "google_maps"],
+                    },
+                    "tile_count": {
+                        "type": "integer",
+                        "description": "Number of tiles (from resolve_tiles or location lookup)",
+                    },
+                    "results_per_tile": {
+                        "type": "integer",
+                        "description": "Estimated results per tile",
+                        "default": 25,
+                    },
+                },
+                "required": ["type", "tile_count"],
+            },
+        ),
     ]
 
 
@@ -590,6 +625,17 @@ async def _dispatch(name: str, args: dict) -> dict:
     elif name == "list_jobs":
         from suplex.jobs import list_jobs as _list
         return _list(status=args.get("status"))
+
+    elif name == "get_apify_budget":
+        from suplex.apify_budget import get_apify_budget
+        return await get_apify_budget()
+
+    elif name == "estimate_job_cost":
+        from suplex.apify_budget import estimate_linkedin_cost, estimate_gmaps_cost
+        if args["type"] == "linkedin":
+            return estimate_linkedin_cost(args["tile_count"], args.get("results_per_tile", 25))
+        else:
+            return estimate_gmaps_cost(args["tile_count"], args.get("results_per_tile", 100))
 
     else:
         raise ValueError(f"Unknown tool: {name}")

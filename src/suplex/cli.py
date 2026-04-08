@@ -386,6 +386,26 @@ def stats() -> None:
     click.echo(json.dumps(data, indent=2))
 
 
+@cli.command()
+def budget() -> None:
+    """Check Apify credit usage and remaining budget."""
+    from suplex.apify_budget import get_apify_budget
+
+    result = asyncio.run(get_apify_budget())
+    if result.get("error"):
+        click.echo(f"Error: {result['error']}", err=True)
+        return
+
+    click.echo(f"Apify Budget:", err=True)
+    click.echo(f"  Used:      ${result['used_usd']:.2f} / ${result['plan_limit_usd']:.2f}", err=True)
+    click.echo(f"  Remaining: ${result['remaining_usd']:.2f}", err=True)
+    if result["over_limit"]:
+        click.echo(f"  WARNING: Over monthly limit!", err=True)
+    click.echo(f"  Active runs: {result['active_runs']}", err=True)
+    click.echo(f"  Cycle: {result['cycle_start'][:10]} to {result['cycle_end'][:10]}", err=True)
+    click.echo(json.dumps(result, indent=2))
+
+
 # ---------------------------------------------------------------------------
 # run (background jobs)
 # ---------------------------------------------------------------------------
@@ -400,10 +420,15 @@ def run() -> None:
 @click.argument("query")
 @click.option("--location", "-l", required=True, help="Location")
 @click.option("--max-results", "-n", default=0, help="Max results per tile (0=exhaust)")
-def run_scrape_maps(query: str, location: str, max_results: int) -> None:
+@click.option("--scraper", "-s", type=click.Choice(["auto", "playwright", "apify"]), default="auto")
+def run_scrape_maps(query: str, location: str, max_results: int, scraper: str) -> None:
     """Launch Google Maps scrape in background."""
     from suplex.jobs import launch_scrape_job
-    extra = ["-n", str(max_results)] if max_results > 0 else []
+    extra = []
+    if max_results > 0:
+        extra.extend(["-n", str(max_results)])
+    if scraper != "auto":
+        extra.extend(["-s", scraper])
     result = launch_scrape_job("maps", query, location, max_results=max_results, extra_args=extra)
     click.echo(json.dumps(result, indent=2))
 
