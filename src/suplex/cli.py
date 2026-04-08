@@ -567,13 +567,16 @@ def run_scrape_maps(query: str, location: str, max_results: int, scraper: str) -
 @click.argument("query")
 @click.option("--location", "-l", required=True, help="Location")
 @click.option("--titles", "-t", default=None, help="Job titles (comma-separated)")
-def run_scrape_linkedin(query: str, location: str, titles: str | None) -> None:
+@click.option("--max-results", "-n", default=0, help="Max results (0=exhaust)")
+def run_scrape_linkedin(query: str, location: str, titles: str | None, max_results: int) -> None:
     """Launch LinkedIn scrape in background."""
     from suplex.jobs import launch_scrape_job
     extra = []
     if titles:
         extra.extend(["-t", titles])
-    result = launch_scrape_job("linkedin", query, location, extra_args=extra)
+    if max_results > 0:
+        extra.extend(["-n", str(max_results)])
+    result = launch_scrape_job("linkedin", query, location, max_results=max_results, extra_args=extra)
     click.echo(json.dumps(result, indent=2))
 
 
