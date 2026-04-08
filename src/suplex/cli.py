@@ -21,8 +21,16 @@ logging.basicConfig(
 
 
 @click.group()
-def cli() -> None:
+@click.pass_context
+def cli(ctx: click.Context) -> None:
     """Suplex — Agent-driven lead scraping and verification."""
+    # First-run detection: nudge user to setup if not configured.
+    if ctx.invoked_subcommand not in ("setup", "serve", "doctor"):
+        from pathlib import Path
+        config_path = Path.home() / ".config" / "suplex" / "config.toml"
+        skill_path = Path.home() / ".claude" / "skills" / "suplex" / "SKILL.md"
+        if not config_path.exists() or not skill_path.exists():
+            click.echo("Suplex not fully configured. Run: suplex setup", err=True)
 
 
 # ---------------------------------------------------------------------------
