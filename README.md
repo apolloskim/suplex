@@ -35,7 +35,17 @@ suplex setup
 ```bash
 suplex setup
 suplex scrape maps "dentist" -l "Austin, TX" -s playwright -n 20
+suplex scrape linkedin "dental hygienist" -l "Austin, TX" -n 20
 suplex export -o dentists.csv
+```
+
+## Country-wide scraping
+
+```bash
+suplex regions Japan                                       # discover regions
+suplex scrape maps "dentist" -l US --only WY,VT -n 20     # start small
+suplex scrape maps "dentist" -l US --exclude WY,VT -n 20  # continue, skip done
+suplex resume <job_id>                                     # pick up interrupted jobs
 ```
 
 ## For AI agents

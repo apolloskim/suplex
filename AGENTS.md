@@ -10,9 +10,15 @@ suplex setup          # install skill, MCP server, Playwright, API keys
 suplex doctor         # check services
 suplex budget         # check Apify credits
 
+# Discover locations
+suplex regions Japan                   # list regions with city counts
+suplex regions --search Rotterdam      # find region + country + LinkedIn autocompletes
+suplex regions --search "North Holland"  # find local name (Noord-Holland)
+
 # Scrape (foreground, auto-enriches by default)
 suplex scrape maps "query" -l "location" -s playwright|apify -n 20 -r 5
-suplex scrape maps "query" -l "location" --no-enrich
+suplex scrape maps "query" -l US --only CA,TX,NY -n 20
+suplex scrape maps "query" -l US --exclude WY,VT -n 20
 suplex scrape linkedin "query" -l "location" -t "titles" -n 20
 suplex scrape website https://example.com
 
@@ -24,7 +30,7 @@ suplex run enrich
 # Enrich (standalone)
 suplex enrich --linkedin-posts 1
 
-# Monitor
+# Monitor + Resume
 suplex jobs
 suplex job <id>
 suplex resume <id>     # pick up where a killed/failed job left off
@@ -45,10 +51,11 @@ suplex serve           # MCP server (stdio)
 
 - NEVER commit API keys or tokens
 - NEVER modify geo data files manually
-- All scraper output goes through `LeadStore.insert_lead()` for dedup
+- **Always pass `-n` for max results.** Never exhaust without user confirmation.
 - Apify budget is enforced — over-budget launches are blocked
-- Playwright: 500 places/day limit, human-like pacing
+- Playwright: 500 places/day limit, human-like pacing (2-15s delays)
 - LinkedIn emails are pre-verified by Apify — do NOT re-verify with Reacher
+- LinkedIn posts only fetched for leads WITH email — don't waste credits on unreachable leads
 - Scraping auto-enriches by default — use `--no-enrich` to skip
 
 ## Data Model
@@ -65,7 +72,8 @@ suplex serve           # MCP server (stdio)
 - Scraping auto-enriches by default (--enrich flag, on by default)
 - Google Maps: Playwright (free, 500/day) or Apify (paid, budget-enforced). Reviews via RPC API.
 - LinkedIn: Apify only. Full+email mode. Pre-verified emails. All SDR signals stored.
-- Batch jobs: parent/child in SQLite, watchdog auto-advances when slots open
-- Resume: `suplex resume <id>` — done tiles skipped, failed tiles retried
-- Email: site-extracted first, then guessing (role addresses for businesses, permutations for persons). Catch-all domains: site emails kept, guesses rejected.
+- Batch jobs: parent/child in SQLite, watchdog auto-advances when slots open. No polling needed.
+- Resume: `suplex resume <id>` — done tiles skipped, failed tiles retried, exact flags preserved.
+- `--only` / `--exclude`: filter tiles by region. Accent-insensitive, works globally. Agent checks `suplex jobs` for completed regions, excludes them on next run.
+- `suplex regions`: discover local region names before filtering. Search by city/region/country.
 - The agent IS the AI layer. Suplex returns raw_data + clean_text; agent interprets.

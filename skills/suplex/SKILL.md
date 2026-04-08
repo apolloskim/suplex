@@ -144,6 +144,34 @@ suplex export -e -o enriched.csv           # enriched only
 - Guessed: verified during guessing. Stored only if valid.
 - Catch-all: site emails = keep. Guesses = reject.
 
+## Discover locations
+
+Before using `--only`/`--exclude`, discover local region names:
+
+```bash
+suplex regions Japan                    # list all regions with city counts
+suplex regions --search Rotterdam       # find: Zuid-Holland, NL + LinkedIn autocompletes
+suplex regions --search Tokyo           # find: Tōkyō, JP
+suplex regions --search "North Holland" # find local name to use in --only
+```
+
+## Incremental country-wide scraping
+
+When scraping a whole country, check what's already done and exclude it:
+
+1. `suplex jobs` → see completed jobs with locations
+2. `suplex job <id>` → check tile completion (e.g., 57/57 = fully done)
+3. Next run: `--exclude` the done regions
+
+```bash
+# Day 1: scrape Wyoming and Vermont
+suplex scrape maps "dentist" -l US --only WY,VT -n 20
+# Day 2: check jobs, WY+VT done → scrape next states
+suplex scrape maps "dentist" -l US --only MT,ND,SD -n 20
+# Or exclude what's done
+suplex scrape maps "dentist" -l US --exclude WY,VT,MT,ND,SD -n 20
+```
+
 ## Location formats
 
 | Input | Google Maps | LinkedIn |
@@ -155,6 +183,7 @@ suplex export -e -o enriched.csv           # enriched only
 | `London, UK` | UK only | UK only |
 
 Accents: `São Paulo` = `Sao Paulo`. Disambiguation: `London, UK` vs `London, Kentucky`.
+Filters: `--only Tokyo` matches `Tōkyō`. `--only Noord-Holland` for Dutch regions.
 
 ## MCP tools
 

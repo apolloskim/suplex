@@ -557,6 +557,65 @@ def export(source: str | None, status: str | None, enriched: bool, output: str) 
 
 
 @cli.command()
+@click.argument("query", default=None, required=False)
+@click.option("--search", "-q", default=None, help="Search for a city, region, or country")
+def regions(query: str | None, search: str | None) -> None:
+    """List regions in a country, or search for any location."""
+    store = LeadStore()
+
+    if search:
+        # Search cities table for matching city/region/country.
+        import unicodedata
+        term = "".join(
+            c for c in unicodedata.normalize("NFD", search.lower()) if unicodedata.category(c) != "Mn"
+        )
+        with store._conn() as conn:
+            rows = conn.execute(
+                """SELECT name, state, country_code, country_name, population
+                   FROM cities WHERE LOWER(name) LIKE ? OR LOWER(state) LIKE ? OR LOWER(country_name) LIKE ?
+                   ORDER BY population DESC LIMIT 20""",
+                (f"%{term}%", f"%{term}%", f"%{term}%"),
+            ).fetchall()
+
+        if not rows:
+            click.echo(f"No results for '{search}'", err=True)
+            return
+
+        click.echo(f"Results for '{search}':", err=True)
+        for r in rows:
+            click.echo(f"  {r['name']:25s} region={r['state']:25s} country={r['country_name']} ({r['country_code']})", err=True)
+
+        # Also check LinkedIn geo map.
+        li_results = store.get_linkedin_geo(search.lower())
+        if li_results:
+            click.echo(f"\nLinkedIn autocompletes for '{search}':", err=True)
+            for li in li_results[:10]:
+                click.echo(f"  {li}", err=True)
+
+    elif query:
+        # List regions in a country.
+        from suplex.geo.tiles import _get_country_codes
+        codes = _get_country_codes(store)
+        cc = codes.get(query.lower())
+        if not cc:
+            # Maybe it's a direct country code.
+            cc = query.upper() if len(query) <= 3 else None
+
+        if not cc:
+            click.echo(f"Unknown country: {query}", err=True)
+            return
+
+        region_list = store.get_regions(cc)
+        country_name = next((c["country_name"] for c in store.get_all_countries() if c["country_code"] == cc), cc)
+        click.echo(f"{country_name} ({cc}): {len(region_list)} regions", err=True)
+        for r in region_list:
+            cities = store.get_cities(r, country_code=cc)
+            click.echo(f"  {r:30s} ({len(cities)} cities)", err=True)
+    else:
+        click.echo("Usage: suplex regions <country> or suplex regions --search <query>", err=True)
+
+
+@cli.command()
 def budget() -> None:
     """Check Apify credit usage and remaining budget."""
     from suplex.apify_budget import get_apify_budget

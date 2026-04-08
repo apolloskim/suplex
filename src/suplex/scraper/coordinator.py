@@ -104,10 +104,16 @@ class ScrapeCoordinator:
                         if tc in [f.upper() for f in filters]:
                             return True
 
-                        # Match location string (for LinkedIn autocomplete).
+                        # Match location string (works for both Maps and LinkedIn).
                         loc = _strip(tile.location or "")
                         for nf in normalized_filters:
                             if nf and nf in loc:
+                                return True
+
+                        # Match tile_city.
+                        city = _strip(tile.extra.get("tile_city", ""))
+                        for nf in normalized_filters:
+                            if nf and city and (nf in city or city in nf):
                                 return True
 
                         return False
