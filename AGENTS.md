@@ -53,15 +53,21 @@ uv run suplex serve
 
 | Tool | Description |
 |------|-------------|
-| `setup_status` | Check which API keys are configured. **Call this first.** |
+| `setup_status` | Check API keys + sender profile status. **Call this first.** |
 | `configure` | Set and validate an API key |
 | `ensure_reacher` | Auto-start Reacher Docker for email verification |
+| `set_profile` | Scrape user's website to create sender profile |
+| `get_profile` | Get current sender profile |
 | `plan_scrape` | AI generates a scrape plan from business domain + preferences |
 | `run_scrape_plan` | Plan + execute in one step |
-| `scrape_google_maps` | Scrape Google Maps via Apify |
-| `scrape_linkedin` | Scrape LinkedIn via Apify |
-| `scrape_website` | Scrape a website with Playwright |
-| `verify_emails` | Verify unverified emails in the database |
+| `scrape_google_maps` | Scrape Google Maps (Playwright or Apify) |
+| `scrape_linkedin` | Scrape LinkedIn via Apify with autocomplete tiling |
+| `scrape_website` | Scrape a website for rich business data |
+| `enrich_leads` | Enrich unenriched leads: site scrape + email verify + email guess + LinkedIn posts |
+| `verify_emails` | Verify unverified emails via Reacher (auto Docker) |
+| `run_background_job` | Launch scrape/enrich in background, returns job_id |
+| `get_job_status` | Check progress of a background job |
+| `list_jobs` | List recent background jobs |
 | `get_leads` | Query leads with filters |
 | `get_stats` | Lead count statistics |
 

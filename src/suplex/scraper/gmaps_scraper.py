@@ -128,21 +128,28 @@ class GMapsScraper:
 
     @staticmethod
     async def _dismiss_consent(page: Page) -> None:
-        """Dismiss Google consent/cookie dialogs."""
-        for selector in (
-            'button[aria-label="Accept all"]',
-            'button:has-text("Accept all")',
-            'button:has-text("Reject all")',
-            'form[action*="consent"] button',
-        ):
-            try:
-                btn = page.locator(selector).first
-                if await btn.is_visible(timeout=2000):
-                    await btn.click()
-                    await page.wait_for_timeout(1000)
-                    return
-            except Exception:
-                pass
+        """Dismiss Google consent/cookie dialogs (multi-region)."""
+        # Try iframe-based consent first (common in EU).
+        for frame in page.frames:
+            for selector in (
+                'button[aria-label="Accept all"]',
+                'button:has-text("Accept all")',
+                'button:has-text("Alle akzeptieren")',
+                'button:has-text("Tout accepter")',
+                'button:has-text("Aceptar todo")',
+                'button:has-text("Accetta tutto")',
+                'button:has-text("Reject all")',
+                'button:has-text("Alle ablehnen")',
+                'form[action*="consent"] button',
+            ):
+                try:
+                    btn = frame.locator(selector).first
+                    if await btn.is_visible(timeout=1000):
+                        await btn.click()
+                        await page.wait_for_timeout(1000)
+                        return
+                except Exception:
+                    pass
 
     @staticmethod
     async def _scroll_and_collect(page: Page, target_count: int) -> list[str]:

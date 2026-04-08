@@ -115,7 +115,7 @@ class EmailVerifier:
                 return False
 
         # --- Step 3: Is Reacher container running? ---
-        cmd = runtime if runtime != "podman" else "podman"
+        cmd = runtime
 
         proc = await asyncio.create_subprocess_exec(
             cmd, "inspect", "-f", "{{.State.Running}}", REACHER_CONTAINER_NAME,

@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS leads (
     title TEXT,
     phone TEXT,
     location TEXT,
-    linkedin_url TEXT UNIQUE,
+    linkedin_url TEXT,
     google_maps_url TEXT,
     website TEXT,
     source TEXT NOT NULL,
@@ -136,37 +136,93 @@ class LeadStore:
             conn.close()
 
     def insert_lead(self, lead: Lead) -> int:
+        """Insert a lead with deduplication.
+
+        Dedup keys (checked in order):
+        1. linkedin_url (for LinkedIn leads)
+        2. google_maps_url (for Google Maps leads)
+        3. email + source (for any source with email)
+        4. name + location + source (fallback)
+        """
         with self._conn() as conn:
+            # Check for existing lead.
+            existing_id = self._find_duplicate(conn, lead)
+            if existing_id:
+                # Update existing lead with new data (merge).
+                conn.execute(
+                    """UPDATE leads SET
+                        name=COALESCE(?, name), email=COALESCE(?, email),
+                        company=COALESCE(?, company), title=COALESCE(?, title),
+                        phone=COALESCE(?, phone), location=COALESCE(?, location),
+                        linkedin_url=COALESCE(?, linkedin_url),
+                        google_maps_url=COALESCE(?, google_maps_url),
+                        website=COALESCE(?, website),
+                        raw_data=?, scraped_at=?
+                    WHERE id = ?""",
+                    (
+                        lead.name, lead.email, lead.company, lead.title,
+                        lead.phone, lead.location, lead.linkedin_url,
+                        lead.google_maps_url, lead.website,
+                        json.dumps(lead.raw_data), lead.scraped_at.isoformat(),
+                        existing_id,
+                    ),
+                )
+                return existing_id
+
             cur = conn.execute(
-                """
-                INSERT INTO leads (name, email, company, title, phone, location,
+                """INSERT INTO leads (name, email, company, title, phone, location,
                     linkedin_url, google_maps_url, website, source, raw_data,
                     scraped_at, verification_status, verified_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(linkedin_url) DO UPDATE SET
-                    name=excluded.name, email=excluded.email, company=excluded.company,
-                    title=excluded.title, phone=excluded.phone, location=excluded.location,
-                    google_maps_url=excluded.google_maps_url, website=excluded.website,
-                    raw_data=excluded.raw_data, scraped_at=excluded.scraped_at
-                """,
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
-                    lead.name,
-                    lead.email,
-                    lead.company,
-                    lead.title,
-                    lead.phone,
-                    lead.location,
-                    lead.linkedin_url,
-                    lead.google_maps_url,
-                    lead.website,
-                    lead.source.value,
-                    json.dumps(lead.raw_data),
-                    lead.scraped_at.isoformat(),
+                    lead.name, lead.email, lead.company, lead.title,
+                    lead.phone, lead.location, lead.linkedin_url,
+                    lead.google_maps_url, lead.website, lead.source.value,
+                    json.dumps(lead.raw_data), lead.scraped_at.isoformat(),
                     lead.verification_status.value,
                     lead.verified_at.isoformat() if lead.verified_at else None,
                 ),
             )
             return cur.lastrowid  # type: ignore[return-value]
+
+    @staticmethod
+    def _find_duplicate(conn: sqlite3.Connection, lead: Lead) -> int | None:
+        """Find an existing lead that matches this one."""
+        # 1. LinkedIn URL (strongest identifier).
+        if lead.linkedin_url:
+            row = conn.execute(
+                "SELECT id FROM leads WHERE linkedin_url = ?", (lead.linkedin_url,)
+            ).fetchone()
+            if row:
+                return row["id"]
+
+        # 2. Google Maps URL.
+        if lead.google_maps_url:
+            row = conn.execute(
+                "SELECT id FROM leads WHERE google_maps_url = ?", (lead.google_maps_url,)
+            ).fetchone()
+            if row:
+                return row["id"]
+
+        # 3. Email + source.
+        if lead.email:
+            row = conn.execute(
+                "SELECT id FROM leads WHERE email = ? AND source = ?",
+                (lead.email, lead.source.value),
+            ).fetchone()
+            if row:
+                return row["id"]
+
+        # 4. Name + location + source (fuzzy match for businesses).
+        if lead.name and lead.location:
+            row = conn.execute(
+                "SELECT id FROM leads WHERE name = ? AND location = ? AND source = ?",
+                (lead.name, lead.location, lead.source.value),
+            ).fetchone()
+            if row:
+                return row["id"]
+
+        return None
 
     def insert_leads(self, leads: list[Lead]) -> int:
         count = 0
