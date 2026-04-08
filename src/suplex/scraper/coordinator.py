@@ -7,7 +7,6 @@ import logging
 from typing import Any
 
 import anyio
-import psutil
 
 from suplex.apify_budget import get_apify_budget
 from suplex.geo.tiles import resolve_tiles
@@ -22,7 +21,6 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_BROWSER_CONCURRENCY = 3
 DEFAULT_API_CONCURRENCY = 10
-CPU_THROTTLE_PERCENT = 95.0
 
 
 class ScrapeCoordinator:
@@ -138,7 +136,7 @@ class ScrapeCoordinator:
     ) -> None:
         try:
             if target.source == LeadSource.PLAYWRIGHT:
-                await self._run_with_cpu_guard(
+                await self._run_with_limiter(
                     self.browser_limiter, self.site_scraper.scrape, target, item_key, callback,
                 )
             elif target.source == LeadSource.GOOGLE_MAPS:
@@ -156,7 +154,7 @@ class ScrapeCoordinator:
                         leads = await self.apify_scraper.scrape(target)
                         await callback(item_key, leads)
                 else:
-                    await self._run_with_cpu_guard(
+                    await self._run_with_limiter(
                         self.browser_limiter, self.gmaps_scraper.scrape, target, item_key, callback,
                     )
             elif target.source == LeadSource.LINKEDIN:
@@ -198,13 +196,10 @@ class ScrapeCoordinator:
             # If budget check fails, allow the run (don't block on API errors).
             return True
 
-    async def _run_with_cpu_guard(
+    async def _run_with_limiter(
         self, limiter: anyio.CapacityLimiter, fn: Any,
         target: ScrapeTarget, item_key: str, callback: Any,
     ) -> None:
-        while psutil.cpu_percent(interval=0.5) > CPU_THROTTLE_PERCENT:
-            logger.warning("CPU at %.1f%% — throttling", psutil.cpu_percent())
-            await anyio.sleep(2)
         async with limiter:
             leads = await fn(target)
             await callback(item_key, leads)
