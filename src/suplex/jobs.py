@@ -105,7 +105,10 @@ def launch_batch_job(specs: list[dict], *, max_parallel: int = 3) -> dict:
         _launch_child_job(child)
         launched.append(child["job_id"])
 
-    logger.info("Batch %s: %d jobs, %d launched", batch_id, len(specs), len(launched))
+    # Spawn watchdog — auto-advances the batch when slots open.
+    _spawn_watchdog(batch_id, max_parallel)
+
+    logger.info("Batch %s: %d jobs, %d launched + watchdog", batch_id, len(specs), len(launched))
     return {
         "batch_id": batch_id,
         "total_jobs": len(specs),
@@ -274,6 +277,60 @@ def list_jobs(status: str | None = None) -> list[dict]:
     """List recent jobs."""
     store = LeadStore()
     return store.list_jobs(status=status)
+
+
+def _spawn_watchdog(batch_id: str, max_parallel: int) -> None:
+    """Spawn a detached watchdog process that auto-advances the batch."""
+    cmd = [
+        sys.executable, "-c",
+        f"from suplex.jobs import _watchdog_loop; _watchdog_loop('{batch_id}', {max_parallel})",
+    ]
+    log_path = _log_path(f"{batch_id}_watchdog")
+    log_file = open(log_path, "w")
+    subprocess.Popen(
+        cmd,
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+
+
+def _watchdog_loop(batch_id: str, max_parallel: int, poll_interval: int = 15) -> None:
+    """Check every poll_interval seconds and launch next jobs when slots open.
+
+    Runs as a detached subprocess. Exits when batch is complete.
+    """
+    import time
+
+    store = LeadStore()
+
+    while True:
+        status = store.get_batch_status(batch_id)
+        if not status:
+            break
+
+        done = status["done"] + status["failed"]
+        total = status["total_jobs"]
+
+        # Batch complete?
+        if done >= total:
+            final_status = "done" if status["failed"] == 0 else "done_with_errors"
+            store.finish_job(batch_id, final_status)
+            print(f"Batch {batch_id} complete: {final_status} ({status['done']} done, {status['failed']} failed)")
+            break
+
+        # Launch next jobs if slots open.
+        running = store.count_running_children(batch_id)
+        slots = max(0, max_parallel - running)
+
+        if slots > 0 and status["pending"] > 0:
+            pending = store.get_pending_children(batch_id, limit=slots)
+            for child in pending:
+                meta = json.loads(child["meta"]) if isinstance(child["meta"], str) else child["meta"]
+                _launch_child_job({"job_id": child["id"], "type": child["type"], "meta": meta})
+                print(f"Launched {child['id']} ({meta.get('query', '')} / {meta.get('location', '')})")
+
+        time.sleep(poll_interval)
 
 
 def _suplex_bin() -> str:
