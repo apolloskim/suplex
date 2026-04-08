@@ -20,17 +20,29 @@ logging.basicConfig(
 )
 
 
-@click.group()
+@click.group(invoke_without_command=True)
 @click.pass_context
 def cli(ctx: click.Context) -> None:
     """Suplex — Agent-driven lead scraping and verification."""
-    # First-run detection: nudge user to setup if not configured.
-    if ctx.invoked_subcommand not in ("setup", "serve", "doctor"):
-        from pathlib import Path
-        config_path = Path.home() / ".config" / "suplex" / "config.toml"
-        skill_path = Path.home() / ".claude" / "skills" / "suplex" / "SKILL.md"
-        if not config_path.exists() or not skill_path.exists():
-            click.echo("Suplex not fully configured. Run: suplex setup", err=True)
+    from pathlib import Path
+    config_path = Path.home() / ".config" / "suplex" / "config.toml"
+    skill_path = Path.home() / ".claude" / "skills" / "suplex" / "SKILL.md"
+    is_configured = config_path.exists() and skill_path.exists()
+
+    # If called with no subcommand (just `suplex`), show getting started.
+    if ctx.invoked_subcommand is None:
+        if not is_configured:
+            click.echo("Welcome to Suplex! Get started:\n", err=True)
+            click.echo("  suplex setup    Install skill, MCP server, and configure API keys", err=True)
+            click.echo("  suplex doctor   Check service health\n", err=True)
+        else:
+            # Show help if already configured.
+            click.echo(ctx.get_help())
+        return
+
+    # First-run nudge on any other command.
+    if not is_configured and ctx.invoked_subcommand not in ("setup", "serve", "doctor"):
+        click.echo("Suplex not fully configured. Run: suplex setup", err=True)
 
 
 # ---------------------------------------------------------------------------
