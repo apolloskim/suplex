@@ -463,6 +463,60 @@ def stats() -> None:
 
 
 @cli.command()
+@click.option("--source", "-s", type=click.Choice(["google_maps", "linkedin", "playwright"]), default=None, help="Filter by source")
+@click.option("--status", "-v", type=click.Choice(["pending", "valid", "invalid", "catch_all", "unknown"]), default=None, help="Filter by verification status")
+@click.option("--enriched", "-e", is_flag=True, default=False, help="Only enriched leads")
+@click.option("--output", "-o", default="leads.csv", help="Output file path")
+def export(source: str | None, status: str | None, enriched: bool, output: str) -> None:
+    """Export leads to CSV."""
+    import csv
+    from suplex.models import LeadSource, VerificationStatus
+
+    store = LeadStore()
+    src = LeadSource(source) if source else None
+    vs = VerificationStatus(status) if status else None
+    leads_list = store.get_leads(source=src, verification_status=vs, limit=999999)
+
+    if enriched:
+        leads_list = [l for l in leads_list if l.raw_data.get("enrichment_data") or l.raw_data.get("clean_text")]
+
+    if not leads_list:
+        click.echo("No leads to export.", err=True)
+        return
+
+    # Build CSV with flat columns for the most useful fields.
+    fieldnames = [
+        "name", "email", "verification_status", "company", "title", "phone",
+        "location", "website", "source", "linkedin_url", "google_maps_url",
+        "rating", "review_count", "scraped_at",
+    ]
+
+    with open(output, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        for lead in leads_list:
+            row = {
+                "name": lead.name,
+                "email": lead.email,
+                "verification_status": lead.verification_status.value,
+                "company": lead.company,
+                "title": lead.title,
+                "phone": lead.phone,
+                "location": lead.location,
+                "website": lead.website,
+                "source": lead.source.value,
+                "linkedin_url": lead.linkedin_url,
+                "google_maps_url": lead.google_maps_url,
+                "rating": lead.raw_data.get("rating", ""),
+                "review_count": lead.raw_data.get("review_count", ""),
+                "scraped_at": lead.scraped_at.isoformat() if lead.scraped_at else "",
+            }
+            writer.writerow(row)
+
+    click.echo(f"Exported {len(leads_list)} leads to {output}", err=True)
+
+
+@cli.command()
 def budget() -> None:
     """Check Apify credit usage and remaining budget."""
     from suplex.apify_budget import get_apify_budget
