@@ -10,12 +10,18 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: macos-latest     # arm64
+          - os: macos-latest
             platform: macos
             arch: arm64
-          - os: ubuntu-latest   # x64
+            ext: ""
+          - os: ubuntu-latest
             platform: linux
             arch: x64
+            ext: ""
+          - os: windows-latest
+            platform: windows
+            arch: x64
+            ext: ".exe"
 
     runs-on: ${{ matrix.os }}
 
@@ -36,14 +42,19 @@ jobs:
       - name: Build binary
         run: uv run pyinstaller suplex.spec --clean
 
-      - name: Rename binary
+      - name: Rename binary (unix)
+        if: runner.os != 'Windows'
         run: mv dist/suplex dist/suplex-${{ matrix.platform }}-${{ matrix.arch }}
+
+      - name: Rename binary (windows)
+        if: runner.os == 'Windows'
+        run: mv dist/suplex.exe dist/suplex-${{ matrix.platform }}-${{ matrix.arch }}.exe
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: suplex-${{ matrix.platform }}-${{ matrix.arch }}
-          path: dist/suplex-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/suplex-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.ext }}
 
   release:
     needs: build
