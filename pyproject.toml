@@ -17,6 +17,9 @@ dependencies = [
     "playwright>=1.58",
     "apify-client>=2.5",
     "httpx>=0.28",
+    "selectolax>=0.3",
+    "extruct>=0.18",
+    "trafilatura>=2.0",
     # Concurrency
     "anyio>=4.9",
     "psutil>=6.0",

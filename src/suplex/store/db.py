@@ -34,6 +34,30 @@ CREATE INDEX IF NOT EXISTS idx_leads_email ON leads(email);
 CREATE INDEX IF NOT EXISTS idx_leads_source ON leads(source);
 CREATE INDEX IF NOT EXISTS idx_leads_verification ON leads(verification_status);
 CREATE INDEX IF NOT EXISTS idx_leads_company ON leads(company);
+
+CREATE TABLE IF NOT EXISTS cities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    state TEXT NOT NULL,
+    country_code TEXT NOT NULL DEFAULT 'US',
+    country_name TEXT NOT NULL DEFAULT 'United States',
+    lat REAL NOT NULL,
+    lng REAL NOT NULL,
+    population INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_cities_state ON cities(state);
+CREATE INDEX IF NOT EXISTS idx_cities_country ON cities(country_code);
+CREATE INDEX IF NOT EXISTS idx_cities_pop ON cities(population DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_cities_name_state_country ON cities(name, state, country_code);
+
+CREATE TABLE IF NOT EXISTS sender_profile (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    website TEXT NOT NULL,
+    data TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -167,6 +191,122 @@ class LeadStore:
         with self._conn() as conn:
             row = conn.execute(f"SELECT COUNT(*) FROM leads {where}", params).fetchone()
             return row[0]
+
+    # ------------------------------------------------------------------
+    # Sender profile
+    # ------------------------------------------------------------------
+
+    def save_profile(self, website: str, data: dict) -> None:
+        now = datetime.utcnow().isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO sender_profile (id, website, data, created_at, updated_at)
+                VALUES (1, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    website=excluded.website, data=excluded.data, updated_at=excluded.updated_at
+                """,
+                (website, json.dumps(data, default=str), now, now),
+            )
+
+    def get_profile(self) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM sender_profile WHERE id = 1").fetchone()
+            if row:
+                return {
+                    "website": row["website"],
+                    **json.loads(row["data"]),
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                }
+        return None
+
+    # ------------------------------------------------------------------
+    # Cities (geo tile planning)
+    # ------------------------------------------------------------------
+
+    def cities_seeded(self) -> bool:
+        with self._conn() as conn:
+            row = conn.execute("SELECT COUNT(*) FROM cities").fetchone()
+            return row[0] > 0
+
+    def seed_cities(self, cities: list[dict]) -> int:
+        """Bulk insert cities. Each dict: {name, state, lat, lng, pop, country_code?, country_name?}."""
+        with self._conn() as conn:
+            conn.executemany(
+                """
+                INSERT OR IGNORE INTO cities (name, state, country_code, country_name, lat, lng, population)
+                VALUES (:name, :state, :country_code, :country_name, :lat, :lng, :pop)
+                """,
+                cities,
+            )
+            return len(cities)
+
+    def get_cities(
+        self,
+        state: str,
+        *,
+        country_code: str = "US",
+        min_population: int = 0,
+        limit: int = 9999,
+    ) -> list[dict]:
+        """Get top cities in a state/region by population."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT name, state, country_code, lat, lng, population
+                FROM cities
+                WHERE state = ? AND country_code = ? AND population >= ?
+                ORDER BY population DESC
+                LIMIT ?
+                """,
+                (state, country_code, min_population, limit),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def get_cities_by_country(
+        self,
+        country_code: str,
+        *,
+        min_population: int = 0,
+        limit: int = 9999,
+    ) -> list[dict]:
+        """Get all cities in a country by population."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT name, state, country_code, lat, lng, population
+                FROM cities
+                WHERE country_code = ? AND population >= ?
+                ORDER BY population DESC
+                LIMIT ?
+                """,
+                (country_code.upper(), min_population, limit),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def get_regions(self, country_code: str = "US") -> list[str]:
+        """Get all unique state/region names for a country."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT state FROM cities WHERE country_code = ? ORDER BY state",
+                (country_code.upper(),),
+            ).fetchall()
+            return [row["state"] for row in rows]
+
+    def get_all_countries(self) -> list[dict]:
+        """Get all countries with city counts."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT country_code, country_name, COUNT(*) as city_count
+                FROM cities GROUP BY country_code
+                ORDER BY city_count DESC
+                """,
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _row_to_lead(row: sqlite3.Row) -> Lead:

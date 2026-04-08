@@ -14,6 +14,7 @@ from mcp.types import TextContent, Tool
 from suplex.ai.strategist import Strategist
 from suplex.config import Config
 from suplex.models import LeadSource, ScrapeTarget, VerificationStatus
+from suplex.profile import SenderProfile, scrape_sender_profile
 from suplex.scraper.coordinator import ScrapeCoordinator
 from suplex.setup import SERVICES, configure_key, get_setup_status
 from suplex.store.db import LeadStore
@@ -79,6 +80,33 @@ async def list_tools() -> list[Tool]:
                 "Checks if Docker is available, pulls the Reacher image if needed, "
                 "and starts the container. Free self-hosted SMTP verification. "
                 "Call this before verify_emails if setup_status shows no reacher_api_key."
+            ),
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="set_profile",
+            description=(
+                "Scrape the user's own website to create a sender profile. "
+                "This is NOT a lead — it's the user's business identity used for "
+                "email generation and scrape planning. Call during onboarding after "
+                "asking for their website URL."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "The user's business website URL",
+                    },
+                },
+                "required": ["url"],
+            },
+        ),
+        Tool(
+            name="get_profile",
+            description=(
+                "Get the current sender profile. Returns the user's business identity "
+                "including description, value proposition, emails, and clean text from their site."
             ),
             inputSchema={"type": "object", "properties": {}},
         ),
@@ -261,13 +289,23 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
 async def _dispatch(name: str, args: dict) -> dict:
     if name == "setup_status":
-        return get_setup_status()
+        status = get_setup_status()
+        status["sender_profile"] = SenderProfile.load().summary()
+        return status
 
     elif name == "configure":
         return await configure_key(args["key"], args["value"])
 
     elif name == "ensure_reacher":
         return await _ensure_reacher_docker()
+
+    elif name == "set_profile":
+        profile = await scrape_sender_profile(args["url"])
+        return {"saved": True, **profile.summary()}
+
+    elif name == "get_profile":
+        profile = SenderProfile.load()
+        return profile.summary()
 
     # Reload config-dependent services on each call.
     store, coordinator, verifier, strategist = _load_services()

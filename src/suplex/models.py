@@ -45,7 +45,7 @@ class ScrapeTarget(BaseModel):
     source: LeadSource
     query: str
     location: str | None = None
-    max_results: int = 100
+    max_results: int = 0  # 0 = exhaust all results
     extra: dict[str, Any] = Field(default_factory=dict)
 
 

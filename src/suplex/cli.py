@@ -25,6 +25,29 @@ def cli() -> None:
 
 
 # ---------------------------------------------------------------------------
+# profile (sender identity)
+# ---------------------------------------------------------------------------
+
+
+@cli.command()
+@click.argument("url")
+def profile(url: str) -> None:
+    """Scrape your website to create a sender profile."""
+    from suplex.profile import scrape_sender_profile
+
+    async def _run() -> None:
+        click.echo(f"Scraping {url} for sender profile...", err=True)
+        p = await scrape_sender_profile(url)
+        click.echo(f"Sender profile saved:", err=True)
+        click.echo(f"  Business: {p.business_name}", err=True)
+        click.echo(f"  Description: {p.description[:120]}", err=True)
+        click.echo(f"  Emails: {p.data.get('emails', [])}", err=True)
+        click.echo(json.dumps(p.summary(), indent=2))
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
 # setup & doctor
 # ---------------------------------------------------------------------------
 

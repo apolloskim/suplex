@@ -9,9 +9,11 @@ from typing import Any
 import anyio
 import psutil
 
+from suplex.geo.tiles import resolve_tiles
 from suplex.models import Lead, ScrapeTarget, LeadSource
 from suplex.scraper.apify_scraper import ApifyScraper
-from suplex.scraper.playwright_scraper import PlaywrightScraper
+from suplex.scraper.gmaps_scraper import GMapsScraper
+from suplex.scraper.site_scraper import SiteScraper
 from suplex.store.db import LeadStore
 
 logger = logging.getLogger(__name__)
@@ -38,11 +40,36 @@ class ScrapeCoordinator:
         self.store = store
         self.browser_limiter = anyio.CapacityLimiter(browser_concurrency)
         self.api_limiter = anyio.CapacityLimiter(api_concurrency)
-        self.playwright_scraper = PlaywrightScraper()
+        self.site_scraper = SiteScraper()
         self.apify_scraper = ApifyScraper(token=apify_token)
+        self.gmaps_scraper = GMapsScraper()
+        self._has_apify = bool(apify_token)
 
     async def run(self, targets: list[ScrapeTarget]) -> list[Lead]:
-        """Run all scrape targets concurrently, respecting resource limits."""
+        """Run all scrape targets concurrently, respecting resource limits.
+
+        Google Maps targets with state/country locations are auto-expanded into
+        city-level tiles via the geo tile planner.
+        """
+        # Expand any Google Maps targets that cover a state/country into tiles.
+        expanded: list[ScrapeTarget] = []
+        for target in targets:
+            if target.source in (LeadSource.GOOGLE_MAPS, LeadSource.LINKEDIN) and target.location:
+                tiles = resolve_tiles(
+                    target.query,
+                    target.location,
+                    max_results_per_tile=target.max_results,
+                    source=target.source,
+                    has_apify=self._has_apify,
+                    store=self.store,
+                )
+                expanded.extend(tiles)
+            else:
+                expanded.append(target)
+
+        if len(expanded) != len(targets):
+            logger.info("Expanded %d targets → %d tiles", len(targets), len(expanded))
+
         all_leads: list[Lead] = []
         lock = asyncio.Lock()
 
@@ -52,10 +79,10 @@ class ScrapeCoordinator:
                 self.store.insert_leads(leads)
 
         async with anyio.create_task_group() as tg:
-            for target in targets:
+            for target in expanded:
                 tg.start_soon(self._run_target, target, _collect)
 
-        logger.info("Scraped %d leads from %d targets", len(all_leads), len(targets))
+        logger.info("Scraped %d leads from %d targets", len(all_leads), len(expanded))
         return all_leads
 
     async def _run_target(
@@ -68,12 +95,29 @@ class ScrapeCoordinator:
             if target.source == LeadSource.PLAYWRIGHT:
                 await self._run_with_cpu_guard(
                     self.browser_limiter,
-                    self.playwright_scraper.scrape,
+                    self.site_scraper.scrape,
                     target,
                     callback,
                 )
+            elif target.source == LeadSource.GOOGLE_MAPS:
+                # Route based on tile_scraper hint or Apify availability.
+                use_apify = (
+                    self._has_apify
+                    and target.extra.get("tile_scraper", "apify") == "apify"
+                )
+                if use_apify:
+                    async with self.api_limiter:
+                        leads = await self.apify_scraper.scrape(target)
+                        await callback(leads)
+                else:
+                    await self._run_with_cpu_guard(
+                        self.browser_limiter,
+                        self.gmaps_scraper.scrape,
+                        target,
+                        callback,
+                    )
             else:
-                # Apify — Google Maps or LinkedIn
+                # LinkedIn or other Apify sources.
                 async with self.api_limiter:
                     leads = await self.apify_scraper.scrape(target)
                     await callback(leads)
