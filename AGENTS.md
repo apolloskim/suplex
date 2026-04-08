@@ -8,66 +8,72 @@ Agent-driven lead scraping, enrichment, and email verification CLI + MCP tool.
 # Install
 uv sync && uv run playwright install chromium
 
-# First-time setup
-uv run suplex setup          # configure API keys (interactive)
-uv run suplex profile <url>  # set sender profile from your website
-uv run suplex doctor         # verify all services healthy
+# Setup
+suplex setup          # configure API keys
+suplex profile <url>  # set sender profile from your website
+suplex doctor         # verify services
+suplex budget         # check Apify credit usage
 
-# Scrape
-uv run suplex scrape maps "query" -l "location" -s playwright|apify
-uv run suplex scrape linkedin "query" -l "location" -t "titles"
-uv run suplex scrape website https://example.com
+# Scrape (foreground)
+suplex scrape maps "query" -l "location" -s playwright|apify -r 5
+suplex scrape linkedin "query" -l "location" -t "titles" -m full_with_email
+suplex scrape website https://example.com
 
-# Enrich (runs on all unenriched leads)
-uv run suplex enrich --linkedin-posts 1
+# Scrape (background)
+suplex run scrape-maps "query" -l "location" -s playwright
+suplex run scrape-linkedin "query" -l "location" -t "titles"
+suplex run enrich
 
-# Background jobs
-uv run suplex run scrape-maps "query" -l "location"
-uv run suplex run scrape-linkedin "query" -l "location"
-uv run suplex run enrich
-uv run suplex jobs                    # list all jobs
-uv run suplex job <id>                # check progress
+# Enrich
+suplex enrich --linkedin-posts 1
 
-# Query
-uv run suplex leads --source google_maps --status valid
-uv run suplex stats
-uv run suplex verify -n 50
+# Monitor
+suplex jobs                    # list all jobs
+suplex job <id>                # check progress
+suplex leads --source google_maps --status valid
+suplex stats
+suplex budget
+
+# Verify
+suplex verify -n 50
 
 # MCP server
-uv run suplex serve
+suplex serve
 ```
 
 ## Code Style
 
-- Python 3.12+, type hints required
-- Async-first: use `asyncio` / `anyio` for all I/O
-- `uv` for package management, never `pip`
-- `ruff` for linting
-- Tests: `uv run pytest`, not `uv test`
+- Python 3.12+, type hints, async-first (`asyncio` / `anyio`)
+- `uv` for package management, `ruff` for linting
+- Tests: `uv run pytest`
 
 ## Boundaries
 
 - NEVER commit API keys or tokens
-- NEVER modify `src/suplex/geo/us-cities.json` or `worldcities.csv` manually
-- NEVER modify the SQLite schema without adding migration logic for existing DBs
+- NEVER modify geo data files manually (`us-cities.json`, `worldcities.csv`)
+- NEVER modify SQLite schema without migration logic for existing DBs
 - All scraper output goes through `LeadStore.insert_lead()` for dedup
 - Background jobs MUST pass `SUPLEX_JOB_ID` env var for progress tracking
+- Apify budget is enforced — over-budget launches are blocked
+- Playwright daily limit: 500 place visits/day
+- LinkedIn emails are pre-verified by Apify — do NOT re-verify with Reacher
 
 ## Data Model
 
-- **leads** table: all scraped contacts (Google Maps + LinkedIn + website)
-- **sender_profile** table: user's own business identity (single row)
-- **jobs** table: background job tracking with parent/child batches
-- **item_tasks** table: per-tile crash recovery
-- **cities** table: 59K cities across 241 countries for geo tiling
-- **linkedin_locations** table: 17K cached autocomplete strings
-- **linkedin_geo_map** table: 316K lookup keys for tile resolution
+- **leads**: all scraped contacts with dedup (linkedin_url → google_maps_url → email+source → name+location+source)
+- **sender_profile**: user's business identity (single row)
+- **jobs**: background job tracking with parent/child batches
+- **item_tasks**: per-tile crash recovery (pending → processing → done)
+- **cities**: 59K cities across 241 countries for Google Maps geo tiling
+- **linkedin_locations**: 17K cached autocomplete strings
+- **linkedin_geo_map**: 316K lookup keys for LinkedIn tile resolution
 
-## Key Architecture Decisions
+## Architecture
 
 - Scraping and enrichment are decoupled. Scrape first, enrich later.
-- Google Maps: Playwright (free, coordinate-based viewport search) or Apify (paid, polygon-based). Agent chooses.
-- LinkedIn: Apify only. One actor run per autocomplete string. No tiling overlap.
-- Email verification: Reacher Docker (auto-installed, free SMTP handshake).
-- Site scraping: httpx + selectolax + trafilatura (fast) with Playwright fallback for JS shells.
-- The agent IS the AI layer. Suplex returns clean_text; the agent interprets it. No embedded LLM calls.
+- Google Maps Playwright: coordinate-based viewport search, 500/day limit, reviews via RPC API
+- Google Maps Apify: polygon-based, budget-enforced, no daily limit
+- LinkedIn Apify: autocomplete-based tiling, full+email mode, pre-verified emails
+- Email verification: Reacher Docker (auto-installed, free SMTP handshake)
+- Site scraping: httpx + selectolax + trafilatura (fast) → Playwright fallback for JS shells
+- The agent IS the AI layer. Suplex returns clean_text + raw_data; the agent interprets it.

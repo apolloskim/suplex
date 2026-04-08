@@ -1,173 +1,160 @@
 ---
 name: suplex
 description: >
-  Scrape B2B leads from Google Maps and LinkedIn, enrich with website data
-  and email verification, run background batch jobs. Use when the user asks
-  to find leads, scrape contacts, build prospect lists, verify emails, or
-  enrich business data. Handles geographic tiling across 241 countries.
+  Scrape B2B leads from Google Maps and LinkedIn, enrich with website data,
+  Google reviews, email verification, and LinkedIn posts. Use when the user
+  asks to find leads, scrape contacts, build prospect lists, verify emails,
+  or enrich business data. Handles geographic tiling across 241 countries.
+  Check Apify budget before launching paid scrapes.
 metadata:
   author: apolloskim
-  version: "0.1.0"
+  version: "0.2.0"
 argument-hint: <scrape|enrich|verify|batch>
 ---
 
 # Suplex Lead Scraping Skill
 
-## First-time setup
+## Before any scraping
 
-Before any scraping, check setup:
+1. Check setup: `suplex doctor`
+2. Check Apify budget: `suplex budget` or `get_apify_budget` MCP tool
+3. If budget is $0: use Playwright for Google Maps (free). LinkedIn requires Apify credits.
 
-```bash
-suplex doctor
-```
+## Google Maps scraping
 
-If API keys are missing, run `suplex setup`. Apify token is needed for LinkedIn and paid Google Maps. Playwright scraping works with zero keys.
-
-For the sender profile (needed for email generation later):
+Default to **Playwright** (free, 500 places/day limit). Use **Apify** when user wants scale or speed.
 
 ```bash
-suplex profile https://their-website.com
+suplex scrape maps "dentists" -l "Texas" -s playwright     # free
+suplex scrape maps "dentists" -l "Texas" -s apify           # paid, check budget first
+suplex scrape maps "dentists" -l "Austin, TX" -r 10         # 10 reviews per place
+suplex scrape maps "dentists" -l "Austin, TX" -r 0          # skip reviews
 ```
 
-## Choosing a scraping approach
+Each place gets: name, rating, phone, address, website, category, hours, price level, Google Maps URL, and **reviews** (default 5 per place via RPC API — author, stars, date, text).
 
-### Google Maps
+Geographic tiling is automatic: "Texas" → 1,025 tiles, "US" → ~10,000, "Japan" → 1,339.
 
-Default to **Playwright** (free). Switch to **Apify** only when:
-- The user explicitly asks for Apify
-- You need >120 results per city (Playwright caps at ~120, Apify gets thousands)
-- Speed matters more than cost
+Playwright daily limit: 500 places/day. For larger runs, spread across days or use Apify.
 
-```bash
-# Free (Playwright, coordinate-based search)
-suplex scrape maps "dentists" -l "Texas" -s playwright
+## LinkedIn scraping
 
-# Paid (Apify, polygon-based, more results)
-suplex scrape maps "dentists" -l "Texas" -s apify
-```
-
-Geographic tiling is automatic. "Texas" expands to 1,025 city tiles. "US" expands to 10,000. "Japan" to 1,339. Each tile scrapes independently and deduplicates.
-
-### LinkedIn
-
-Always uses Apify (no free option). Each city's autocomplete string becomes one actor run. Full+email mode is the default.
+Always Apify. Always full+email mode. Check budget first.
 
 ```bash
 suplex scrape linkedin "dental hygienist" -l "Texas"
 suplex scrape linkedin "" -l "US" -t "Dental Office Manager,Practice Manager"
+suplex scrape linkedin "dentist" -l "Austin, TX" -t "Owner,Founder"
 ```
 
-### Website enrichment
+Each profile gets: name, email (pre-verified), title, headline, company, about, experience, education, skills, connections, followers, openToWork, hiring signals, company website.
 
-Site scraping is always free. Uses httpx+selectolax (fast) with Playwright fallback for JS-heavy sites.
+Emails from LinkedIn are pre-verified by Apify — do NOT re-verify with Reacher.
 
-```bash
-suplex scrape website https://example.com
+LinkedIn tiling uses autocomplete strings from SQLite (17K cached). "Texas" → 995 unique LinkedIn geo entities. Disambiguation supported: "London, UK" vs "London, Kentucky".
+
+## Budget awareness
+
+**Always check budget before Apify jobs:**
+
 ```
+get_apify_budget → {"used_usd": 85.00, "remaining_usd": 15.00, "plan_limit_usd": 100}
+estimate_job_cost(type="linkedin", tile_count=995) → {"total_estimated_usd": 34.83}
+```
+
+If remaining < estimated cost: warn the user, suggest Playwright for Google Maps, or reduce scope.
+
+Budget is enforced at runtime — if $0 remaining, Apify jobs are blocked and marked as `apify_budget_exhausted`.
 
 ## Batch scraping workflow
 
-When the user gives multiple queries and/or multiple sources, decompose into a batch:
+When user gives multiple queries/sources:
 
-**Step 1:** Break the request into individual jobs.
+**Step 1:** Decompose into jobs.
 
-Example: "Scrape dental hygienists and dentist owners across LinkedIn and Google Maps in Texas"
+"Scrape dental hygienists, dentist owners, and office managers across LinkedIn and Google Maps in Texas"
 
-→ 4 jobs:
-- scrape_maps / "dental hygienist" / Texas
-- scrape_maps / "dentist owner" / Texas
-- scrape_linkedin / "dental hygienist" / Texas
-- scrape_linkedin / "dentist owner" / Texas
-
-**Step 2:** Launch as a batch via MCP or CLI.
-
-MCP:
+→ 6 jobs:
 ```json
 run_batch_job({
   "jobs": [
     {"type": "scrape_maps", "query": "dental hygienist", "location": "Texas", "scraper": "playwright"},
-    {"type": "scrape_maps", "query": "dentist owner", "location": "Texas", "scraper": "playwright"},
+    {"type": "scrape_maps", "query": "dentist", "location": "Texas", "scraper": "playwright"},
+    {"type": "scrape_maps", "query": "dental office manager", "location": "Texas", "scraper": "playwright"},
     {"type": "scrape_linkedin", "query": "dental hygienist", "location": "Texas"},
-    {"type": "scrape_linkedin", "query": "dentist owner", "location": "Texas", "titles": "Owner,Founder,Practice Owner"}
+    {"type": "scrape_linkedin", "query": "dentist owner", "location": "Texas", "titles": "Owner,Founder"},
+    {"type": "scrape_linkedin", "query": "dental office manager", "location": "Texas", "titles": "Office Manager,Practice Manager"}
   ],
   "max_parallel": 3
 })
 ```
 
-**Step 3:** Monitor progress.
+**Step 2:** Monitor with `get_batch_status`. Call `advance_batch` periodically to launch next pending jobs.
 
-```json
-get_batch_status("batch_id")
-→ {"done": 2, "running": 2, "pending": 0, "total_leads": 4231}
-```
-
-Call `advance_batch("batch_id")` periodically to launch next pending jobs when slots open.
-
-**Step 4:** Enrich when scraping is complete.
-
+**Step 3:** When all scrape jobs done, run enrichment:
 ```json
 run_background_job({"type": "enrich"})
 ```
 
-## Enrichment workflow
+## Enrichment
 
-Enrichment is separate from scraping. Run it after scraping, or on a schedule.
+Separate from scraping. Picks up all unenriched leads.
 
 ```bash
-suplex enrich                     # enrich all unenriched leads
-suplex enrich --linkedin-posts 1  # default: fetch 1 latest LinkedIn post per lead
-suplex enrich --linkedin-posts 0  # skip LinkedIn posts (cheaper)
+suplex enrich                     # all unenriched leads
+suplex enrich --linkedin-posts 1  # default: 1 post per LinkedIn lead
+suplex enrich --linkedin-posts 0  # skip posts (saves Apify credits)
 ```
 
-What enrichment does per lead:
-1. Scrapes their company website (free) → business data, clean_text
-2. Verifies their email via Reacher Docker (free, auto-installed)
-3. Guesses email if missing (name + domain permutations → verify each)
-4. Fetches LinkedIn posts (Apify, ~$0.002/lead, optional)
+Per lead:
+1. **Site scrape** (free) — company website → business description, services, clean_text, emails, social links
+2. **Email from site** — if found on website, use directly (even on catch-all domains)
+3. **Email verification** — Reacher Docker SMTP handshake (free, auto-installed). Skipped for LinkedIn leads (pre-verified).
+4. **Email guessing** — if no email: person names → permutations (first.last@domain), businesses → role addresses (info@, contact@). Blocked on catch-all domains.
+5. **LinkedIn posts** — latest posts via Apify (~$0.002/lead). Conversation hooks.
 
-## Email verification
+## Email rules
 
-Fully automatic. Reacher Docker is auto-installed on first use (installs Homebrew + colima if needed on macOS, Docker on Linux). The user never sees Docker.
-
-If Docker setup fails, verification degrades to syntax+DNS only (no SMTP handshake).
+- LinkedIn emails: pre-verified by Apify. Status stored as valid/catch_all/invalid.
+- Site-extracted emails: real (business published them). Verify with Reacher.
+- Guessed emails: only on non-catch-all domains. Verify before storing.
+- Catch-all domains: site-extracted = keep. Guessed = reject.
 
 ## Crash recovery
 
-All scrape jobs track per-tile progress in SQLite. On crash:
-- Already-done tiles are skipped
-- Stale tiles (stuck >5 min) reset to pending
-- Restart the same job and it resumes
+All jobs track per-tile progress in SQLite. On crash:
+- Done tiles skipped on restart
+- Stale tiles (>5 min) reset to pending
+- No data loss
 
 ## Location formats
 
-The agent can pass locations at any granularity:
+| Input | Google Maps tiles | LinkedIn tiles |
+|-------|------------------|---------------|
+| `Austin, TX` | 1 | 1 |
+| `Texas` | 1,025 | 995 |
+| `US` | ~10,000 | ~13,000 |
+| `Japan` | 1,339 | 1,682 |
+| `London, UK` | UK only | UK only |
+| `North Holland, Netherlands` | 40 | 40 |
 
-| Input | Expands to |
-|-------|-----------|
-| `Austin, TX` | 1 tile |
-| `Texas` | 1,025 tiles (Google Maps) or 995 autocomplete strings (LinkedIn) |
-| `US` | ~10,000 tiles (Google Maps) or ~13,000 autocompletes (LinkedIn) |
-| `Japan` | 1,339 tiles |
-| `London, UK` | UK London only (disambiguated) |
-| `London, Kentucky` | KY London only |
-| `North Holland, Netherlands` | 40 tiles |
-| `Seoul` | Seoul metro area |
+Accents normalized: `São Paulo` = `Sao Paulo`.
 
-Accented and non-accented forms work identically: `São Paulo` = `Sao Paulo`.
-
-## MCP tools reference
+## MCP tools
 
 | Tool | When to use |
 |------|------------|
-| `setup_status` | First thing. Check what's configured. |
-| `configure` | Set an API key. Validates before saving. |
-| `set_profile` | Onboarding. Scrape user's site for sender identity. |
-| `get_profile` | Read the sender profile. |
-| `scrape_google_maps` | Single Google Maps scrape (foreground). |
+| `setup_status` | First. Check keys + sender profile. |
+| `configure` | Set an API key (validates before saving). |
+| `get_apify_budget` | **Before any Apify job.** Check remaining credits. |
+| `estimate_job_cost` | Estimate USD cost before running. |
+| `set_profile` | Onboarding: scrape user's site for sender identity. |
+| `get_profile` | Read sender profile. |
+| `scrape_google_maps` | Single Maps scrape (foreground). |
 | `scrape_linkedin` | Single LinkedIn scrape (foreground). |
 | `scrape_website` | Single website scrape (foreground). |
 | `run_background_job` | Launch one scrape/enrich in background. |
-| `run_batch_job` | Launch multiple jobs as a batch. |
+| `run_batch_job` | Launch multiple jobs as batch. |
 | `get_job_status` | Check one job's progress. |
 | `get_batch_status` | Check batch progress (all children). |
 | `advance_batch` | Launch next pending children when slots open. |

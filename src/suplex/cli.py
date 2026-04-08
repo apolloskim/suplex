@@ -55,10 +55,65 @@ def profile(url: str) -> None:
 
 @cli.command()
 def setup() -> None:
-    """Interactive setup — configure API keys and verify services."""
+    """Full setup — install skill, register MCP server, configure API keys."""
+    import shutil
+    import subprocess
+    from pathlib import Path
+
     from suplex.config import Config
     from suplex.setup import SERVICES, validate_key
 
+    # Step 1: Install skill files.
+    click.echo("Installing suplex skill...", err=True)
+    skill_src = Path(__file__).parent / "skills" / "suplex"
+    if skill_src.exists():
+        # Install to ~/.claude/skills/ (Claude Code) and ~/.agents/skills/ (universal)
+        for base in (Path.home() / ".claude" / "skills", Path.home() / ".agents" / "skills"):
+            dst = base / "suplex"
+            dst.mkdir(parents=True, exist_ok=True)
+            for f in skill_src.iterdir():
+                if f.is_file():
+                    shutil.copy2(f, dst / f.name)
+        click.echo("  Skill installed.", err=True)
+    else:
+        click.echo("  Skill files not found in package — skipping.", err=True)
+
+    # Step 2: Register MCP server (if claude CLI available).
+    click.echo("Registering MCP server...", err=True)
+    suplex_bin = shutil.which("suplex")
+    claude_bin = shutil.which("claude")
+    if claude_bin and suplex_bin:
+        try:
+            subprocess.run(
+                [claude_bin, "mcp", "add", "suplex", "--scope", "user", "--", suplex_bin, "serve"],
+                capture_output=True, timeout=10,
+            )
+            click.echo("  MCP server registered with Claude Code.", err=True)
+        except Exception:
+            click.echo("  Could not register MCP server automatically.", err=True)
+            click.echo(f"  Run manually: claude mcp add suplex --scope user -- {suplex_bin} serve", err=True)
+    else:
+        if suplex_bin:
+            click.echo(f"  Claude CLI not found. Register manually:", err=True)
+            click.echo(f"  claude mcp add suplex --scope user -- {suplex_bin} serve", err=True)
+        else:
+            click.echo("  suplex not found on PATH — install globally first: uv tool install suplex-ai", err=True)
+
+    # Step 3: Install Playwright browsers.
+    click.echo("Checking Playwright browsers...", err=True)
+    try:
+        result = subprocess.run(
+            ["playwright", "install", "chromium"], capture_output=True, timeout=120,
+        )
+        if result.returncode == 0:
+            click.echo("  Chromium ready.", err=True)
+        else:
+            click.echo("  Run: playwright install chromium", err=True)
+    except Exception:
+        click.echo("  Run: playwright install chromium", err=True)
+
+    # Step 4: Configure API keys.
+    click.echo("\nConfiguring API keys...", err=True)
     config = Config.load()
 
     for key, meta in SERVICES.items():
