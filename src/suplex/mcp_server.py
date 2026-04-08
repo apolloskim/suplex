@@ -421,6 +421,20 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="resume_job",
+            description=(
+                "Resume a stopped or failed job. Picks up where it left off — "
+                "already-done tiles are skipped, failed tiles are retried."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "job_id": {"type": "string", "description": "Job ID to resume"},
+                },
+                "required": ["job_id"],
+            },
+        ),
+        Tool(
             name="list_jobs",
             description="List recent background jobs with their status and progress.",
             inputSchema={
@@ -621,6 +635,10 @@ async def _dispatch(name: str, args: dict) -> dict:
     elif name == "get_job_status":
         from suplex.jobs import get_job_status as _get_status
         return _get_status(args["job_id"])
+
+    elif name == "resume_job":
+        from suplex.jobs import resume_job
+        return resume_job(args["job_id"])
 
     elif name == "list_jobs":
         from suplex.jobs import list_jobs as _list

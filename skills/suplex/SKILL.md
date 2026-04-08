@@ -135,9 +135,26 @@ suplex export -e -o enriched.csv           # enriched only
 - Guessed emails: verified during guessing. Stored only if valid.
 - Catch-all domains: site-extracted = keep. Guessed = reject.
 
-## Crash recovery
+## Resume and crash recovery
 
-Jobs track per-tile progress. On crash: done tiles skipped, stale tiles (>5 min) reset. No data loss.
+Every tile is tracked in SQLite (pending → processing → done/failed). On crash, daily limit, or budget exhaustion:
+- Done tiles are skipped
+- Failed/stale tiles reset to pending
+- Resume with the same job_id to continue
+
+```bash
+suplex jobs                    # find the incomplete job
+suplex resume <job_id>         # picks up where it left off
+```
+
+Or via MCP: `resume_job(job_id)` — resets failed tasks, relaunches with same command.
+
+**Daily Playwright workflow:** run 500 tiles today, hit the limit, resume tomorrow:
+```
+Day 1: suplex run scrape-maps "dentist" -l Texas -s playwright → job_id abc123 (500 done, 525 remaining)
+Day 2: suplex resume abc123 → picks up at tile 501
+Day 3: suplex resume abc123 → finishes remaining 25
+```
 
 ## Location formats
 
@@ -173,5 +190,6 @@ Accents normalized: `São Paulo` = `Sao Paulo`. Disambiguation: `London, UK` vs 
 | `verify_emails` | Verify only (foreground). |
 | `get_leads` | Query with filters. |
 | `get_stats` | Counts by source + status. |
+| `resume_job` | Resume stopped/failed job. |
 | `list_jobs` | Recent jobs. |
 | `ensure_reacher` | Pre-start Docker. |

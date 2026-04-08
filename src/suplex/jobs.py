@@ -180,6 +180,70 @@ def _launch_child_job(child: dict) -> None:
         )
 
 
+def resume_job(job_id: str) -> dict:
+    """Resume a stopped/failed job. Relaunches the same command with the same job_id.
+
+    The coordinator will skip already-done tiles via item_tasks.
+    """
+    store = LeadStore()
+    job = store.get_job(job_id)
+    if not job:
+        return {"error": f"Job {job_id} not found"}
+
+    if job["status"] == "running":
+        return {"error": "Job is already running", "job_id": job_id}
+
+    if job["status"] == "done":
+        counts = store.get_item_task_counts(job_id)
+        failed = counts.get("failed", 0)
+        if failed == 0:
+            return {"error": "Job already completed with no failures", "job_id": job_id}
+
+    # Reset failed tasks to pending so they get retried.
+    with store._conn() as conn:
+        conn.execute(
+            "UPDATE item_tasks SET status = 'pending', attempts = attempts WHERE job_id = ? AND status = 'failed'",
+            (job_id,),
+        )
+        reset = conn.execute(
+            "SELECT changes()"
+        ).fetchone()[0]
+
+    store.reset_stale_tasks(job_id)
+
+    meta = job["meta"]
+    job_type = job["type"]
+
+    if job_type == "scrape":
+        source = meta.get("source", "maps")
+        query = meta.get("query", "")
+        location = meta.get("location", "")
+        extra = []
+        if meta.get("scraper"):
+            extra.extend(["-s", meta["scraper"]])
+        if meta.get("titles"):
+            extra.extend(["-t", meta["titles"]])
+        if meta.get("max_results", 0) > 0:
+            extra.extend(["-n", str(meta["max_results"])])
+        launch_scrape_job(source, query, location, extra_args=extra, job_id=job_id)
+    elif job_type == "enrich":
+        launch_enrich_job(
+            limit=meta.get("limit", 100),
+            linkedin_posts=meta.get("linkedin_posts", 1),
+            job_id=job_id,
+        )
+    else:
+        return {"error": f"Cannot resume job type: {job_type}"}
+
+    counts = store.get_item_task_counts(job_id)
+    return {
+        "job_id": job_id,
+        "status": "resumed",
+        "tasks_reset": reset,
+        "tasks": counts,
+    }
+
+
 def get_job_status(job_id: str) -> dict:
     """Get current status of a job from SQLite."""
     store = LeadStore()

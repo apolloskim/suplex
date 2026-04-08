@@ -610,6 +610,15 @@ def job_status_cmd(job_id: str) -> None:
     click.echo(json.dumps(result, indent=2))
 
 
+@cli.command("resume")
+@click.argument("job_id")
+def resume_cmd(job_id: str) -> None:
+    """Resume a stopped or failed job. Picks up where it left off."""
+    from suplex.jobs import resume_job
+    result = resume_job(job_id)
+    click.echo(json.dumps(result, indent=2))
+
+
 # ---------------------------------------------------------------------------
 # serve (MCP server)
 # ---------------------------------------------------------------------------
