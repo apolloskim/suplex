@@ -214,7 +214,7 @@ def scrape_maps(query: str, location: str | None, max_results: int, apify_token:
 @click.option("--titles", "-t", default=None, help="Job titles (comma-separated)")
 @click.option("--companies", "-c", default=None, help="Current companies (comma-separated LinkedIn URLs)")
 @click.option("--industries", default=None, help="Industry IDs (comma-separated)")
-@click.option("--mode", "-m", type=click.Choice(["short", "full", "full_with_email"]), default="short")
+@click.option("--mode", "-m", type=click.Choice(["short", "full", "full_with_email"]), default="full_with_email")
 @click.option("--max-results", "-n", default=0, help="Max results (0 = exhaust)")
 @click.option("--apify-token", envvar="APIFY_TOKEN", default=None)
 def scrape_linkedin(

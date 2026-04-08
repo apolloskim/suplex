@@ -106,7 +106,7 @@ class LinkedInScraper:
         extra: dict[str, Any],
     ) -> dict[str, Any]:
         """Build the Apify actor run_input from the schema."""
-        mode = extra.get("mode", "short")
+        mode = extra.get("mode", "full_with_email")
 
         run_input: dict[str, Any] = {
             "profileScraperMode": MODES.get(mode, "Short"),
