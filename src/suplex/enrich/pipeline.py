@@ -1,13 +1,11 @@
 """Enrichment pipeline — runs on unenriched leads, separate from scraping.
 
 Steps per lead:
-1. Scrape company/business website → rich data (site_scraper, free)
-2. Verify email → Reacher Docker (free)
-3. If no email + have name + domain: guess email permutations → verify (free)
-4. Optionally fetch LinkedIn posts → Apify ($0.002/lead)
-
-Each step is independent — if one fails, the others still run.
-The pipeline picks up where it left off (only processes unenriched leads).
+1. Scrape company/business website → rich data (free)
+2. Extract emails from scraped site data (free)
+3. Verify email via Reacher Docker (free)
+4. If no email: guess via permutations + verify (free)
+5. Optionally fetch LinkedIn posts (Apify, ~$0.002/lead)
 """
 
 from __future__ import annotations
@@ -17,8 +15,6 @@ import os
 import re
 from typing import Any
 
-import anyio
-
 from suplex.models import Lead, LeadSource, ScrapeTarget, VerificationStatus
 from suplex.scraper.site_scraper import SiteScraper
 from suplex.store.db import LeadStore
@@ -26,8 +22,8 @@ from suplex.verify.verifier import EmailVerifier
 
 logger = logging.getLogger(__name__)
 
-# Common email patterns, ordered by likelihood.
-EMAIL_PATTERNS = [
+# Person name patterns (first.last, flast, etc.)
+PERSON_PATTERNS = [
     "{first}.{last}@{domain}",
     "{first}{last}@{domain}",
     "{f}{last}@{domain}",
@@ -35,12 +31,23 @@ EMAIL_PATTERNS = [
     "{first}_{last}@{domain}",
     "{last}.{first}@{domain}",
     "{f}.{last}@{domain}",
-    "{last}@{domain}",
+]
+
+# Role-based patterns for businesses (no person name needed).
+ROLE_PATTERNS = [
+    "info@{domain}",
+    "contact@{domain}",
+    "hello@{domain}",
+    "office@{domain}",
+    "admin@{domain}",
+    "team@{domain}",
+    "support@{domain}",
+    "sales@{domain}",
 ]
 
 
 class EnrichmentPipeline:
-    """Enriches unenriched leads: site scrape + email verify + email guess + LinkedIn posts."""
+    """Enriches unenriched leads: site scrape + email find + verify + LinkedIn posts."""
 
     def __init__(
         self,
@@ -54,9 +61,9 @@ class EnrichmentPipeline:
         self.verifier = EmailVerifier()
         self.apify_token = apify_token or os.environ.get("APIFY_TOKEN", "")
         self.linkedin_posts = linkedin_posts
+        self._catch_all_cache: dict[str, bool] = {}
 
     async def run(self, limit: int = 100, *, job_id: str | None = None) -> dict:
-        """Enrich up to `limit` unenriched leads. Returns stats + setup messages."""
         leads = self.store.get_unenriched(limit=limit)
         if not leads:
             logger.info("No unenriched leads to process")
@@ -67,7 +74,10 @@ class EnrichmentPipeline:
         if job_id:
             self.store.create_job(job_id, "enrich", total=len(leads))
 
-        stats: dict = {"processed": 0, "sites_scraped": 0, "emails_verified": 0, "emails_found": 0, "linkedin_posts": 0}
+        stats: dict = {
+            "processed": 0, "sites_scraped": 0, "emails_from_site": 0,
+            "emails_verified": 0, "emails_guessed": 0, "linkedin_posts": 0,
+        }
 
         try:
             for lead in leads:
@@ -98,40 +108,51 @@ class EnrichmentPipeline:
         return stats
 
     async def _enrich_one(self, lead: Lead, stats: dict[str, int]) -> dict[str, Any]:
-        """Enrich a single lead. Returns enrichment data dict."""
         enrichment: dict[str, Any] = {}
+        found_email: str | None = lead.email
 
-        # Step 1: Scrape website (if available).
+        # Step 1: Scrape website.
         website = lead.website or self._guess_website(lead)
+        site_emails: list[str] = []
         if website:
             try:
                 site_data = await self._scrape_website(website)
                 enrichment["site"] = site_data
                 stats["sites_scraped"] += 1
+                site_emails = site_data.get("emails", [])
             except Exception:
                 logger.debug("Site scrape failed for %s", website)
 
-        # Step 2: Verify existing email.
-        if lead.email and lead.id:
+        # Step 2: Use emails from site if we don't have one.
+        if not found_email and site_emails:
+            found_email = site_emails[0]
+            enrichment["email_source"] = "website"
+            stats["emails_from_site"] += 1
+            if lead.id:
+                self.store.update_email(lead.id, found_email)
+
+        # Step 3: Verify existing/found email.
+        if found_email and lead.id:
             try:
-                result = await self.verifier.verify(lead.email)
+                result = await self.verifier.verify(found_email)
                 self.store.update_verification(lead.id, result.status)
                 enrichment["email_verification"] = result.model_dump()
                 stats["emails_verified"] += 1
             except Exception:
-                logger.debug("Email verification failed for %s", lead.email)
+                logger.debug("Email verification failed for %s", found_email)
 
-        # Step 3: Find email if we don't have one.
-        if not lead.email and lead.name and website:
+        # Step 4: Guess email if still none.
+        if not found_email and website:
             domain = self._extract_domain(website)
             if domain:
-                found = await self._guess_email(lead.name, domain)
-                if found and lead.id:
-                    self.store.update_email(lead.id, found)
-                    enrichment["email_found"] = found
-                    stats["emails_found"] += 1
+                guessed = await self._find_email(lead, domain, site_emails)
+                if guessed and lead.id:
+                    self.store.update_email(lead.id, guessed)
+                    enrichment["email_found"] = guessed
+                    enrichment["email_source"] = "guessed"
+                    stats["emails_guessed"] += 1
 
-        # Step 4: Fetch LinkedIn posts (if enabled and URL available).
+        # Step 5: LinkedIn posts.
         if self.linkedin_posts > 0 and lead.linkedin_url and self.apify_token:
             try:
                 posts = await self._fetch_linkedin_posts(lead.linkedin_url)
@@ -143,44 +164,106 @@ class EnrichmentPipeline:
 
         return enrichment
 
-    async def _scrape_website(self, url: str) -> dict[str, Any]:
-        """Scrape a website and return the rich site data."""
-        target = ScrapeTarget(source=LeadSource.PLAYWRIGHT, query=url)
-        leads = await self.site_scraper.scrape(target)
-        if leads and leads[0].raw_data:
-            return leads[0].raw_data
-        return {}
+    async def _find_email(self, lead: Lead, domain: str, site_emails: list[str]) -> str | None:
+        """Smart email finding: detect catch-all, then try patterns."""
 
-    async def _guess_email(self, name: str, domain: str) -> str | None:
-        """Generate email permutations from name + domain, verify each with Reacher."""
-        parts = name.strip().split()
-        if len(parts) < 2:
-            return None
+        # Detect catch-all domain first.
+        is_catch_all = await self._is_catch_all(domain)
 
-        first = parts[0].lower()
-        last = parts[-1].lower()
-        f = first[0]
+        # Determine if this is a person (LinkedIn) or business (Google Maps).
+        is_person = lead.source == LeadSource.LINKEDIN and self._has_person_name(lead.name)
 
-        # Clean non-alpha characters.
-        first = re.sub(r"[^a-z]", "", first)
-        last = re.sub(r"[^a-z]", "", last)
-        if not first or not last:
-            return None
+        if is_person:
+            # Try person name patterns.
+            patterns = PERSON_PATTERNS
+            parts = lead.name.strip().split()
+            first = re.sub(r"[^a-z]", "", parts[0].lower())
+            last = re.sub(r"[^a-z]", "", parts[-1].lower())
+            if not first or not last:
+                return None
+            f = first[0]
+            candidates = [p.format(first=first, last=last, f=f, domain=domain) for p in patterns]
+        else:
+            # Business: try role-based addresses.
+            candidates = [p.format(domain=domain) for p in ROLE_PATTERNS]
 
-        for pattern in EMAIL_PATTERNS:
-            email = pattern.format(first=first, last=last, f=f, domain=domain)
+        # If site already has emails, use the pattern from those to prioritize.
+        if site_emails:
+            pattern = self._detect_pattern(site_emails[0], domain)
+            if pattern and is_person:
+                # Reorder: put the detected pattern first.
+                detected = pattern.format(first=first, last=last, f=f, domain=domain)
+                if detected in candidates:
+                    candidates.remove(detected)
+                    candidates.insert(0, detected)
+
+        if is_catch_all:
+            # Can't verify — return the most likely candidate unverified.
+            logger.debug("Domain %s is catch-all — returning best guess unverified", domain)
+            return candidates[0] if candidates else None
+
+        # Verify each candidate.
+        for email in candidates:
             try:
                 result = await self.verifier.verify(email)
                 if result.status == VerificationStatus.VALID:
-                    logger.info("Found email: %s", email)
                     return email
             except Exception:
                 continue
 
         return None
 
+    async def _is_catch_all(self, domain: str) -> bool:
+        """Test if a domain is catch-all by verifying a fake address."""
+        if domain in self._catch_all_cache:
+            return self._catch_all_cache[domain]
+
+        fake = f"xyzfaketest98765@{domain}"
+        try:
+            result = await self.verifier.verify(fake)
+            is_ca = result.status in (VerificationStatus.VALID, VerificationStatus.CATCH_ALL)
+            self._catch_all_cache[domain] = is_ca
+            if is_ca:
+                logger.debug("Domain %s is catch-all", domain)
+            return is_ca
+        except Exception:
+            return False
+
+    @staticmethod
+    def _has_person_name(name: str | None) -> bool:
+        """Check if a name looks like a person (not a business)."""
+        if not name:
+            return False
+        # Business names often have these.
+        business_words = {"dental", "dentist", "clinic", "center", "group", "associates",
+                          "practice", "office", "studio", "llc", "inc", "corp", "ltd",
+                          "company", "services", "solutions", "professional", "family"}
+        words = name.lower().split()
+        if any(w in business_words for w in words):
+            return False
+        # Person names are typically 2-3 words, no special chars.
+        if len(words) < 2 or len(words) > 4:
+            return False
+        return True
+
+    @staticmethod
+    def _detect_pattern(email: str, domain: str) -> str | None:
+        """Detect the email pattern from a known email address."""
+        local = email.split("@")[0].lower()
+        if "." in local:
+            return "{first}.{last}@{domain}"
+        if "_" in local:
+            return "{first}_{last}@{domain}"
+        return None
+
+    async def _scrape_website(self, url: str) -> dict[str, Any]:
+        target = ScrapeTarget(source=LeadSource.PLAYWRIGHT, query=url)
+        leads = await self.site_scraper.scrape(target)
+        if leads and leads[0].raw_data:
+            return leads[0].raw_data
+        return {}
+
     async def _fetch_linkedin_posts(self, linkedin_url: str) -> list[dict]:
-        """Fetch recent LinkedIn posts via Apify."""
         from apify_client import ApifyClientAsync
 
         client = ApifyClientAsync(self.apify_token)
@@ -198,34 +281,27 @@ class EnrichmentPipeline:
             text = item.get("content") or item.get("text") or item.get("commentary") or ""
             posts.append({
                 "text": text[:500],
-                "url": item.get("linkedinUrl") or item.get("url") or item.get("postUrl", ""),
+                "url": item.get("linkedinUrl") or item.get("url") or "",
                 "date": item.get("postedAtISO") or item.get("postedDate", ""),
                 "likes": item.get("numLikes") or item.get("likesCount", 0),
                 "comments": item.get("numComments") or item.get("commentsCount", 0),
                 "author": item.get("author", {}).get("name", ""),
             })
-
         return posts
 
     @staticmethod
     def _guess_website(lead: Lead) -> str | None:
-        """Try to guess a website from company name or raw data."""
-        # Check raw_data for any website hints.
         raw_website = lead.raw_data.get("companyWebsite") or lead.raw_data.get("company_website", "")
         if raw_website:
             return raw_website
-
-        # For LinkedIn leads, try company name as domain.
         if lead.company:
             clean = re.sub(r"[^a-z0-9]", "", lead.company.lower())
             if clean:
                 return f"https://{clean}.com"
-
         return None
 
     @staticmethod
     def _extract_domain(url: str) -> str | None:
-        """Extract domain from URL."""
         from urllib.parse import urlparse
         try:
             parsed = urlparse(url)
