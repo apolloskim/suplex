@@ -9,6 +9,7 @@ from typing import Any
 import anyio
 import psutil
 
+from suplex.apify_budget import get_apify_budget
 from suplex.geo.tiles import resolve_tiles
 from suplex.models import Lead, ScrapeTarget, LeadSource
 from suplex.scraper.apify_scraper import ApifyScraper
@@ -146,6 +147,11 @@ class ScrapeCoordinator:
                     and target.extra.get("tile_scraper", "auto") != "playwright"
                 )
                 if use_apify:
+                    if not await self._check_apify_budget():
+                        logger.warning("Apify budget exhausted — skipping: %s", target.query)
+                        if job_id:
+                            self.store.fail_item_task(job_id, item_key, "apify_budget_exhausted")
+                        return
                     async with self.api_limiter:
                         leads = await self.apify_scraper.scrape(target)
                         await callback(item_key, leads)
@@ -154,6 +160,11 @@ class ScrapeCoordinator:
                         self.browser_limiter, self.gmaps_scraper.scrape, target, item_key, callback,
                     )
             elif target.source == LeadSource.LINKEDIN:
+                if not await self._check_apify_budget():
+                    logger.warning("Apify budget exhausted — skipping LinkedIn: %s", target.query)
+                    if job_id:
+                        self.store.fail_item_task(job_id, item_key, "apify_budget_exhausted")
+                    return
                 async with self.api_limiter:
                     leads = await self.linkedin_scraper.scrape(target)
                     await callback(item_key, leads)
@@ -165,6 +176,27 @@ class ScrapeCoordinator:
             logger.exception("Failed target: %s", target.query)
             if job_id:
                 self.store.fail_item_task(job_id, item_key, "exception")
+
+    async def _check_apify_budget(self) -> bool:
+        """Check if Apify budget has remaining credits. Cached for 60 seconds."""
+        import time
+        now = time.time()
+        if hasattr(self, "_budget_cache") and now - self._budget_cache_time < 60:
+            return self._budget_ok
+
+        try:
+            budget = await get_apify_budget()
+            self._budget_ok = not budget.get("over_limit", False) and budget.get("remaining_usd", 0) > 0
+            self._budget_cache_time = now
+            if not self._budget_ok:
+                logger.warning(
+                    "Apify budget: $%.2f used / $%.2f limit — over budget",
+                    budget.get("used_usd", 0), budget.get("plan_limit_usd", 0),
+                )
+            return self._budget_ok
+        except Exception:
+            # If budget check fails, allow the run (don't block on API errors).
+            return True
 
     async def _run_with_cpu_guard(
         self, limiter: anyio.CapacityLimiter, fn: Any,
