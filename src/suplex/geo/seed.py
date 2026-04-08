@@ -91,3 +91,8 @@ def ensure_cities_seeded(store: LeadStore | None = None) -> None:
 
         li_count = store.seed_linkedin_locations(rows)
         logger.info("Seeded %d LinkedIn locations", li_count)
+
+    # Build geo map if not done.
+    if not store.linkedin_geo_map_seeded() and store.linkedin_locations_seeded():
+        from suplex.geo.build_geo_map import build_geo_map
+        build_geo_map(store)

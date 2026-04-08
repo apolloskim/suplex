@@ -1,14 +1,16 @@
 """Tile planner — resolves geographic scope into concrete scrape targets.
 
 Google Maps: tiles by city coordinates (viewport-based search)
-LinkedIn: tiles by unique autocomplete strings (geo entity-based search)
+LinkedIn: tiles by unique autocomplete strings (looked up from geo_map table)
 
-Both support:
-  "Austin, TX"  → 1 target (city passthrough)
-  "Texas"       → all cities in TX
-  "US"          → all cities in US
-  "Japan"       → all cities in JP
-  "Tokyo"       → all cities in Tokyo prefecture
+Both support any granularity:
+  "Austin, TX"                → 1-2 autocomplete tiles
+  "Texas"                     → all TX autocomplete strings
+  "US"                        → all US autocomplete strings
+  "Japan"                     → all JP autocomplete strings
+  "London, UK"                → UK London only
+  "London, Kentucky"          → KY London only
+  "North Holland, Netherlands" → North Holland only
 """
 
 from __future__ import annotations
@@ -93,140 +95,96 @@ def resolve_tiles(
     store = store or LeadStore()
     ensure_cities_seeded(store)
 
+    if source == LeadSource.LINKEDIN:
+        return _linkedin_tiles(query, location, max_results_per_tile, store)
+    else:
+        return _gmaps_tiles_resolve(query, location, max_results_per_tile, has_apify, source, store)
+
+
+# ---------------------------------------------------------------------------
+# LinkedIn tiles — lookup from geo_map
+# ---------------------------------------------------------------------------
+
+
+def _linkedin_tiles(
+    query: str,
+    location: str,
+    max_results: int,
+    store: LeadStore,
+) -> list[ScrapeTarget]:
+    """Generate LinkedIn tiles by looking up the location in the geo_map.
+
+    The geo_map was built from autocomplete data — every geographic entity
+    (country, region, city, metro) is a lookup key that maps to the exact
+    autocomplete strings LinkedIn accepts.
+    """
     location_lower = location.strip().lower()
 
-    # Resolve the geographic scope: state, country, region, or city passthrough.
-    cities = _resolve_cities(location_lower, store)
+    # Look up in geo map.
+    autocompletes = store.get_linkedin_geo(location_lower)
 
-    if cities is None:
-        # City-level passthrough — unrecognized or specific city.
+    if not autocompletes:
+        # Try without accents.
+        normalized = _normalize_accent(location_lower)
+        if normalized != location_lower:
+            autocompletes = store.get_linkedin_geo(normalized)
+
+    if not autocompletes:
+        # Passthrough — the location as-is. The actor will attempt its own resolution.
+        logger.debug("No geo map entry for '%s' — passing through", location)
         return [ScrapeTarget(
-            source=source, query=query, location=location, max_results=max_results_per_tile,
+            source=LeadSource.LINKEDIN,
+            query=query,
+            location=location,
+            max_results=max_results,
         )]
 
-    # Branch by source.
-    if source == LeadSource.LINKEDIN:
-        return _linkedin_tiles(cities, query, max_results_per_tile, store)
-    else:
-        return _gmaps_tiles(cities, query, max_results_per_tile, has_apify, source)
+    # Deduplicate autocomplete strings.
+    unique = list(dict.fromkeys(autocompletes))
 
-
-# ---------------------------------------------------------------------------
-# Geographic resolution (shared)
-# ---------------------------------------------------------------------------
-
-
-def _resolve_cities(location_lower: str, store: LeadStore) -> list[dict] | None:
-    """Resolve a location string to a list of city dicts, or None for passthrough."""
-
-    # US state?
-    state_code = STATE_CODES.get(location_lower)
-    if state_code:
-        cities = store.get_cities(state_code, country_code="US")
-        return cities if cities else None
-
-    # Country?
-    country_codes = _get_country_codes(store)
-    country_code = country_codes.get(location_lower)
-    if country_code:
-        cities = store.get_cities_by_country(country_code)
-        return cities if cities else None
-
-    # Foreign region? (province, prefecture, etc.)
-    # Try exact match (with accent normalization).
-    target = _normalize_accent(location_lower)
-    for country in store.get_all_countries():
-        cc = country["country_code"]
-        for region in store.get_regions(cc):
-            if _normalize_accent(region) == target:
-                cities = store.get_cities(region, country_code=cc)
-                if cities:
-                    return cities
-
-    # Fuzzy region match: search autocomplete suggestions for the location string.
-    # E.g., "North Holland" → find cities whose autocomplete contains "North Holland"
-    # → infer those cities are in that region.
-    matched_cities = _resolve_region_via_autocomplete(location_lower, store)
-    if matched_cities:
-        return matched_cities
-
-    return None
-
-
-def _resolve_region_via_autocomplete(location_lower: str, store: LeadStore) -> list[dict] | None:
-    """Find cities whose LinkedIn autocomplete suggestions contain the location string.
-
-    Searches the linkedin_locations table directly via SQL LIKE — fast, no full scan.
-    E.g., "North Holland" → finds entries like "Amsterdam, North Holland, Netherlands"
-    → infers Amsterdam is in the target region → returns all such cities.
-    """
-    import json as _json
-
-    with store._conn() as conn:
-        rows = conn.execute(
-            "SELECT query, suggestions FROM linkedin_locations WHERE suggestions LIKE ?",
-            (f"%{location_lower}%",),
-        ).fetchall()
-
-    if not rows:
-        return None
-
-    # Extract city names from matching autocomplete entries.
-    city_names: set[str] = set()
-    for row in rows:
-        city_names.add(row["query"])
-
-    if not city_names:
-        return None
-
-    # Find what country these cities are in — check the first matched city.
-    # All should be in the same country for a region query.
-    matched_cities: list[dict] = []
-    country_code: str | None = None
-
-    for cn in city_names:
-        # Look up the city in our cities table.
-        # Try all countries since we don't know which one yet.
-        with store._conn() as conn:
-            city_rows = conn.execute(
-                "SELECT name, state, country_code, lat, lng, population FROM cities WHERE name = ?",
-                (cn,),
-            ).fetchall()
-            for cr in city_rows:
-                if country_code is None:
-                    country_code = cr["country_code"]
-                if cr["country_code"] == country_code:
-                    matched_cities.append(dict(cr))
-
-    if matched_cities:
-        logger.info(
-            "Resolved '%s' via autocomplete → %d cities in %s",
-            location_lower, len(matched_cities), country_code,
+    targets = [
+        ScrapeTarget(
+            source=LeadSource.LINKEDIN,
+            query=query,
+            location=ac,
+            max_results=max_results,
+            extra={"li_resolved": True, "tile_autocomplete": ac},
         )
-        return matched_cities
+        for ac in unique
+    ]
 
-    return None
+    logger.info("LinkedIn: '%s' → %d autocomplete tiles", location, len(targets))
+    return targets
 
 
 # ---------------------------------------------------------------------------
-# Google Maps tiles (coordinate-based)
+# Google Maps tiles — city coordinates
 # ---------------------------------------------------------------------------
 
 
-def _gmaps_tiles(
-    cities: list[dict],
+def _gmaps_tiles_resolve(
     query: str,
+    location: str,
     max_results: int,
     has_apify: bool,
     source: LeadSource,
+    store: LeadStore,
 ) -> list[ScrapeTarget]:
+    """Resolve Google Maps tiles via city database."""
+    location_lower = location.strip().lower()
+    cities = _resolve_cities_for_gmaps(location_lower, store)
+
+    if cities is None:
+        return [ScrapeTarget(
+            source=source, query=query, location=location, max_results=max_results,
+        )]
+
     targets = []
     for city in cities:
         cc = city.get("country_code", "US")
         state = city.get("state", "")
         pop = city["population"]
         use_apify = has_apify and pop >= APIFY_POP_THRESHOLD
-
         loc = f"{city['name']}, {state}" if state else city["name"]
 
         targets.append(ScrapeTarget(
@@ -248,132 +206,66 @@ def _gmaps_tiles(
 
     apify_count = sum(1 for t in targets if t.extra.get("tile_scraper") == "apify")
     logger.info(
-        "Google Maps: %d tiles (%s) — %d apify, %d playwright",
-        len(targets), query, apify_count, len(targets) - apify_count,
+        "Google Maps: '%s' → %d tiles (%d apify, %d playwright)",
+        location, len(targets), apify_count, len(targets) - apify_count,
     )
     return targets
 
 
-# ---------------------------------------------------------------------------
-# LinkedIn tiles (autocomplete string-based)
-# ---------------------------------------------------------------------------
+def _resolve_cities_for_gmaps(location_lower: str, store: LeadStore) -> list[dict] | None:
+    """Resolve a location to city list for Google Maps tiling."""
+    country_codes = _get_country_codes(store)
 
+    # Parse "location, qualifier".
+    parts = [p.strip() for p in location_lower.split(",")]
+    location_part = parts[0]
+    qualifier = parts[1] if len(parts) > 1 else None
 
-def _linkedin_tiles(
-    cities: list[dict],
-    query: str,
-    max_results: int,
-    store: LeadStore,
-) -> list[ScrapeTarget]:
-    """Generate one target per unique LinkedIn autocomplete string.
+    scope_country: str | None = None
+    scope_state: str | None = None
 
-    For each city, look up ALL autocomplete suggestions. Each unique suggestion
-    becomes its own Apify run. Deduplicated so "Austin, Texas Metropolitan Area"
-    only appears once even if multiple cities map to it.
-
-    Suggestions are filtered to only include those relevant to the target geography.
-    """
-    # Determine the target geography for filtering suggestions.
-    # Collect unique state full names (e.g., "texas") and country names.
-    target_country_codes = set()
-    target_state_codes = set()
-    for city in cities:
-        cc = city.get("country_code", "")
+    if qualifier:
+        cc = country_codes.get(qualifier)
         if cc:
-            target_country_codes.add(cc)
-        state = city.get("state", "")
-        if state:
-            target_state_codes.add(state)
+            scope_country = cc
+        sc = STATE_CODES.get(qualifier)
+        if sc:
+            scope_country = "US"
+            scope_state = sc
 
-    # For US state searches, we need state full names for matching.
-    # "TX" → "Texas" for matching against "Houston, Texas, United States"
-    _CODE_TO_STATE_NAME = {v: k.title() for k, v in STATE_CODES.items() if len(k) > 2}
-    target_state_names = set()
-    for sc in target_state_codes:
-        name = _CODE_TO_STATE_NAME.get(sc, sc)
-        target_state_names.add(name.lower())
+    # US state?
+    state_code = STATE_CODES.get(location_part)
+    if state_code and not qualifier:
+        return store.get_cities(state_code, country_code="US") or None
 
-    # For non-US, get country names.
-    target_country_names = set()
-    for c in store.get_all_countries():
-        if c["country_code"] in target_country_codes:
-            target_country_names.add(c["country_name"].lower())
+    # Country?
+    country_code = country_codes.get(location_part)
+    if country_code and not qualifier:
+        return store.get_cities_by_country(country_code) or None
 
-    is_single_us_state = len(target_country_codes) == 1 and "US" in target_country_codes and len(target_state_names) == 1
-    _target_state_code = next(iter(target_state_codes)) if target_state_codes else ""
+    # Region (with optional country scope)?
+    target = _normalize_accent(location_part)
+    search_countries = [{"country_code": scope_country}] if scope_country else store.get_all_countries()
 
-    def _suggestion_matches_geography(suggestion: str, city_name: str) -> bool:
-        """Check if an autocomplete suggestion is relevant to our target area."""
-        s_lower = suggestion.lower()
+    for country in search_countries:
+        cc = country["country_code"]
+        if scope_state:
+            cities = store.get_cities(scope_state, country_code="US")
+            matched = [c for c in cities if _normalize_accent(c["name"]) == target]
+            if matched:
+                return matched
+            continue
+        for region in store.get_regions(cc):
+            if _normalize_accent(region) == target:
+                cities = store.get_cities(region, country_code=cc)
+                if cities:
+                    return cities
 
-        if is_single_us_state:
-            # Strict: must contain the state name (e.g., "texas").
-            state_name = next(iter(target_state_names))
-            if state_name in s_lower:
-                return True
-            # Allow metro patterns only if they also reference the target state.
-            cn = city_name.lower()
-            is_metro = "area" in s_lower or "metropolitan" in s_lower
-            if is_metro and (s_lower.startswith(cn) or s_lower.startswith(f"greater {cn}")):
-                # Verify the metro string also references our state.
-                if state_name in s_lower or f", {_target_state_code.lower()}" in s_lower:
-                    return True
-            # Allow "{city}, {state_code}" format (e.g., "South Houston, TX").
-            if f", {_target_state_code.lower()}" in s_lower or s_lower.endswith(f" {_target_state_code.lower()}"):
-                return True
-            return False
+    # Scoped city lookup.
+    if scope_country:
+        cities = store.get_cities_by_country(scope_country)
+        matched = [c for c in cities if _normalize_accent(c["name"]) == target]
+        if matched:
+            return matched
 
-        # Country-level: must contain the country name.
-        if target_country_names and any(cn in s_lower for cn in target_country_names):
-            return True
-        # Metro patterns: city name appears in a metro/area string.
-        cn = city_name.lower()
-        is_metro = "area" in s_lower or "metropolitan" in s_lower
-        if is_metro and cn in s_lower:
-            return True
-        return False
-
-    seen_autocompletes: dict[str, dict] = {}
-
-    for city in cities:
-        city_name = city["name"]
-        suggestions = store.get_linkedin_location(city_name)
-
-        if suggestions:
-            for suggestion in suggestions:
-                if suggestion not in seen_autocompletes and _suggestion_matches_geography(suggestion, city_name):
-                    seen_autocompletes[suggestion] = city
-        else:
-            state = city.get("state", "")
-            cc = city.get("country_code", "US")
-            if state:
-                fallback = f"{city_name}, {state}"
-            else:
-                fallback = city_name
-
-            if fallback not in seen_autocompletes:
-                seen_autocompletes[fallback] = city
-
-    # Create one target per unique autocomplete string.
-    targets = []
-    for autocomplete_str, origin_city in seen_autocompletes.items():
-        targets.append(ScrapeTarget(
-            source=LeadSource.LINKEDIN,
-            query=query,
-            location=autocomplete_str,  # Already in LinkedIn's canonical format.
-            max_results=max_results,
-            extra={
-                "tile_autocomplete": autocomplete_str,
-                "tile_origin_city": origin_city["name"],
-                "tile_state": origin_city.get("state", ""),
-                "tile_country": origin_city.get("country_code", "US"),
-                "tile_pop": origin_city["population"],
-                "li_resolved": True,  # Tell the scraper not to re-resolve.
-            },
-        ))
-
-    logger.info(
-        "LinkedIn: %d cities → %d unique autocomplete tiles (%s)",
-        len(cities), len(targets), query,
-    )
-    return targets
+    return None

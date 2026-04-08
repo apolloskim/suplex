@@ -60,6 +60,15 @@ CREATE TABLE IF NOT EXISTS linkedin_locations (
 
 CREATE INDEX IF NOT EXISTS idx_linkedin_loc_query ON linkedin_locations(query);
 
+CREATE TABLE IF NOT EXISTS linkedin_geo_map (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    lookup_key TEXT NOT NULL,
+    autocomplete TEXT NOT NULL,
+    UNIQUE(lookup_key, autocomplete)
+);
+
+CREATE INDEX IF NOT EXISTS idx_linkedin_geo_key ON linkedin_geo_map(lookup_key);
+
 CREATE TABLE IF NOT EXISTS sender_profile (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     website TEXT NOT NULL,
@@ -357,6 +366,33 @@ class LeadStore:
                 """,
                 (query, json.dumps(suggestions), datetime.utcnow().isoformat()),
             )
+
+    # ------------------------------------------------------------------
+    # LinkedIn geo map
+    # ------------------------------------------------------------------
+
+    def linkedin_geo_map_seeded(self) -> bool:
+        with self._conn() as conn:
+            row = conn.execute("SELECT COUNT(*) FROM linkedin_geo_map").fetchone()
+            return row[0] > 0
+
+    def seed_linkedin_geo_map(self, rows: list[tuple[str, str]]) -> int:
+        """Bulk insert (lookup_key, autocomplete) pairs."""
+        with self._conn() as conn:
+            conn.executemany(
+                "INSERT OR IGNORE INTO linkedin_geo_map (lookup_key, autocomplete) VALUES (?, ?)",
+                rows,
+            )
+            return len(rows)
+
+    def get_linkedin_geo(self, lookup_key: str) -> list[str]:
+        """Get all autocomplete strings for a lookup key."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT autocomplete FROM linkedin_geo_map WHERE lookup_key = ?",
+                (lookup_key.lower(),),
+            ).fetchall()
+            return [row["autocomplete"] for row in rows]
 
     # ------------------------------------------------------------------
 
