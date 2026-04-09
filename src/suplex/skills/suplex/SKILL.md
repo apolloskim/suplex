@@ -26,7 +26,7 @@ argument-hint: <scrape|run|resume|enrich|export|batch>
 
 Two scrapers. Agent chooses deliberately; there is no auto mode.
 
-**Playwright** (default, free, 500 places/day):
+**Playwright** (default, free, 1000 places/day):
 ```bash
 suplex scrape maps "dentists" -l "Texas" -n 20
 suplex scrape maps "dentists" -l "US" --only WY,VT -n 20

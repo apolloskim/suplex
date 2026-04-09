@@ -54,7 +54,7 @@ suplex serve           # MCP server (stdio)
 - NEVER modify geo data files manually
 - **Always pass `-n` for max results.** Never exhaust without user confirmation.
 - Apify budget is enforced — over-budget launches are blocked
-- Playwright: 500 places/day limit, human-like pacing (2-15s delays)
+- Playwright: 1000 places/day limit, human-like pacing (2-15s delays)
 - LinkedIn emails are pre-verified by Apify — do NOT re-verify with Reacher
 - LinkedIn posts only fetched for leads WITH email — don't waste credits on unreachable leads
 - Scraping auto-enriches by default — use `--no-enrich` to skip
@@ -71,7 +71,7 @@ suplex serve           # MCP server (stdio)
 ## Architecture
 
 - Scraping auto-enriches by default (--enrich flag, on by default)
-- Google Maps: Playwright (free, 500/day) or Apify (paid, budget-enforced). Reviews via RPC API.
+- Google Maps: Playwright (free, 1000/day) or Apify (paid, budget-enforced). Reviews via RPC API.
 - LinkedIn: Apify only. Full+email mode. Pre-verified emails. All SDR signals stored.
 - LinkedIn query supports boolean operators (AND, OR, NOT, "quotes", parens) — use them.
 - LinkedIn filters: --seniority, --functions, --industries, --headcount, -t, --companies, etc.

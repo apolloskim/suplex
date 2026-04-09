@@ -25,7 +25,7 @@ argument-hint: <scrape|enrich|export|batch>
 
 Two scrapers. Agent decides — no auto mode.
 
-**Playwright** (default, free, 500 places/day):
+**Playwright** (default, free, 1000 places/day):
 ```bash
 suplex scrape maps "dentists" -l "Texas" -n 20
 suplex scrape maps "dentists" -l "US" --only WY,VT -n 20
@@ -39,7 +39,7 @@ suplex scrape maps "dentists" -l "US" --exclude WY,VT -s apify -n 100
 
 Playwright → Apify switch on resume:
 ```bash
-suplex resume <job_id> -s apify    # hit 500 limit, continue with Apify
+suplex resume <job_id> -s apify    # hit 1000/day limit, continue with Apify
 ```
 
 Scraping auto-enriches by default. Add `--no-enrich` to skip.
@@ -131,7 +131,7 @@ suplex resume <job_id> -s apify       # switch to Apify for remaining tiles
 
 Daily workflow:
 ```
-Day 1: suplex run scrape-maps "dentist" -l Texas -n 3  → hits 500 Playwright limit
+Day 1: suplex run scrape-maps "dentist" -l Texas -n 3  → hits 1000/day Playwright limit
 Day 2: suplex resume <job_id>                          → continue with Playwright
   OR:  suplex resume <job_id> -s apify                 → finish faster with Apify
 ```

@@ -7,7 +7,7 @@ Cooldown/pacing adapted from suplex-desktop:
 - Random delays between place visits (2-5s, every 8th = 7-15s)
 - Random delays between feed scrolls (1-3s, every 14th = 3-8s)
 - Post-navigation dwell (0.5-1.3s)
-- Daily limit: 500 searches (configurable)
+- Daily limit: 1000 searches (configurable)
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 MAPS_URL = "https://www.google.com/maps/search/{query}"
 MAPS_COORD_URL = "https://www.google.com/maps/search/{query}/@{lat},{lng},{zoom}z"
 DEFAULT_ZOOM = 13  # ~10km radius viewport.
-DAILY_LIMIT = 500  # Max place visits per day via Playwright.
+DAILY_LIMIT = 1000  # Max place visits per day via Playwright.
 
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -55,7 +55,7 @@ REVIEW_COUNT_RE = re.compile(r"([\d,]+)\s*review", re.IGNORECASE)
 class GMapsScraper:
     """Scrape Google Maps search results via Playwright.
 
-    Daily limit: 500 place visits per day (configurable via DAILY_LIMIT).
+    Daily limit: 1000 place visits per day (configurable via DAILY_LIMIT).
     Pacing: random delays between visits, longer pauses every 8th visit.
     """
 

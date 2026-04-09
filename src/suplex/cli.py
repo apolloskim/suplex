@@ -819,7 +819,7 @@ def job_status_cmd(job_id: str) -> None:
 def resume_cmd(job_id: str, scraper: str | None) -> None:
     """Resume a stopped or failed job. Picks up where it left off.
 
-    Use -s to switch scraper: e.g., hit 500 playwright limit, resume with apify.
+    Use -s to switch scraper: e.g., hit the 1000/day Playwright limit, resume with apify.
     """
     from suplex.jobs import resume_job
     result = resume_job(job_id, scraper_override=scraper)
@@ -837,5 +837,4 @@ def serve() -> None:
     from suplex.mcp_server import main as mcp_main
 
     mcp_main()
-
 
