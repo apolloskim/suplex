@@ -42,6 +42,19 @@ suplex stats
 suplex export -o leads.csv
 suplex export -s linkedin -v valid -o verified_linkedin.csv
 
+# Outreach
+suplex playbook show             # view current playbook
+suplex playbook init             # create default playbook
+suplex mailbox add user@gmail.com  # register sender mailbox
+suplex mailbox list              # list mailboxes with send counts
+suplex campaign create "name" -m <mailbox_id> -a "123 Main St, City, ST 12345"
+suplex outreach preview <campaign_id> -n 5   # get leads + playbook for drafting
+suplex outreach drafts <campaign_id>         # list drafts
+suplex outreach approve --all -c <campaign_id>  # approve drafts
+suplex outreach send <campaign_id> -n 10     # send via gws
+suplex outreach replies <mailbox_id>         # check for replies
+suplex outreach due <campaign_id>            # follow-ups due today
+
 # Other
 suplex profile <url>   # sender profile
 suplex verify -n 50    # standalone email verification

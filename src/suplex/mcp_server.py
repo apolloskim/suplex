@@ -616,6 +616,176 @@ async def list_tools() -> list[Tool]:
                 "required": ["type", "tile_count"],
             },
         ),
+        # --- Outreach tools ---
+        Tool(
+            name="get_outreach_playbook",
+            description=(
+                "Get the outreach playbook (tone, angle, CTA, footer, audience). "
+                "If no playbook exists, tell the user and offer to create one. "
+                "Before every outreach run, show the summary and ask if they want to adjust."
+            ),
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="update_outreach_playbook",
+            description="Update the outreach playbook with new content.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "content": {"type": "string", "description": "Full markdown content for the playbook"},
+                },
+                "required": ["content"],
+            },
+        ),
+        Tool(
+            name="list_mailboxes",
+            description="List registered sender mailboxes with today's send count and daily limit.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="add_mailbox",
+            description="Register a new Gmail mailbox for outreach. Returns auth instructions.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "email": {"type": "string", "description": "Gmail address"},
+                    "display_name": {"type": "string", "description": "Sender display name"},
+                    "daily_limit": {"type": "integer", "description": "Max emails per day", "default": 10},
+                },
+                "required": ["email"],
+            },
+        ),
+        Tool(
+            name="create_campaign",
+            description=(
+                "Create an outreach campaign. Defines who to email (filters), "
+                "follow-up cadence, and sender mailbox. Requires a physical address (CAN-SPAM)."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Campaign name"},
+                    "mailbox_id": {"type": "string", "description": "Sender mailbox ID"},
+                    "physical_address": {"type": "string", "description": "Physical postal address (CAN-SPAM required)"},
+                    "source_filter": {"type": "string", "description": "Lead source: google_maps, linkedin"},
+                    "enriched_only": {"type": "boolean", "description": "Only enriched leads", "default": True},
+                    "cadence": {
+                        "type": "array",
+                        "description": "Follow-up cadence. Default: step 1 day 0, step 2 day 3, step 3 day 7",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "step": {"type": "integer"},
+                                "delay_days": {"type": "integer"},
+                            },
+                        },
+                    },
+                },
+                "required": ["name", "mailbox_id", "physical_address"],
+            },
+        ),
+        Tool(
+            name="preview_outreach",
+            description=(
+                "Get eligible leads + playbook for drafting. Returns lead data and playbook "
+                "so the agent can generate personalized emails. Always show playbook summary "
+                "and ask user before drafting."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "campaign_id": {"type": "string"},
+                    "limit": {"type": "integer", "default": 5},
+                },
+                "required": ["campaign_id"],
+            },
+        ),
+        Tool(
+            name="save_outreach_drafts",
+            description="Save agent-generated email drafts to the outreach table.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "campaign_id": {"type": "string"},
+                    "mailbox_id": {"type": "string"},
+                    "drafts": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "lead_id": {"type": "integer"},
+                                "email": {"type": "string"},
+                                "subject": {"type": "string"},
+                                "body": {"type": "string"},
+                                "step": {"type": "integer", "default": 1},
+                            },
+                            "required": ["lead_id", "subject", "body"],
+                        },
+                    },
+                },
+                "required": ["campaign_id", "mailbox_id", "drafts"],
+            },
+        ),
+        Tool(
+            name="approve_outreach_drafts",
+            description="Approve drafts for sending. Use outreach_ids for specific drafts, or campaign_id with approve_all.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "outreach_ids": {"type": "array", "items": {"type": "string"}},
+                    "campaign_id": {"type": "string", "description": "Approve all drafts in this campaign"},
+                    "approve_all": {"type": "boolean", "default": False},
+                },
+            },
+        ),
+        Tool(
+            name="send_outreach",
+            description=(
+                "Send approved outreach emails via gws Gmail. Respects daily limits per mailbox "
+                "and checks suppression list. Never send without user reviewing drafts first."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "campaign_id": {"type": "string"},
+                    "limit": {"type": "integer", "description": "Max emails to send", "default": 10},
+                },
+                "required": ["campaign_id"],
+            },
+        ),
+        Tool(
+            name="check_outreach_replies",
+            description="Check Gmail for replies to sent outreach. Auto-detects opt-outs and adds to suppression list.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "mailbox_id": {"type": "string"},
+                },
+                "required": ["mailbox_id"],
+            },
+        ),
+        Tool(
+            name="get_due_followups",
+            description="Get leads due for follow-up based on campaign cadence. Agent drafts follow-up copy.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "campaign_id": {"type": "string"},
+                },
+                "required": ["campaign_id"],
+            },
+        ),
+        Tool(
+            name="get_outreach_stats",
+            description="Get outreach stats for a campaign: drafted, approved, sent, replied, bounced counts.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "campaign_id": {"type": "string"},
+                },
+                "required": ["campaign_id"],
+            },
+        ),
     ]
 
 
@@ -839,6 +1009,76 @@ async def _dispatch(name: str, args: dict) -> dict:
             return estimate_linkedin_cost(args["tile_count"], args.get("results_per_tile", 25))
         else:
             return estimate_gmaps_cost(args["tile_count"], args.get("results_per_tile", 100))
+
+    # --- Outreach tools ---
+
+    elif name == "get_outreach_playbook":
+        from suplex.outreach.playbook import get_playbook, get_playbook_summary, playbook_exists
+        if not playbook_exists():
+            return {"exists": False, "message": "No playbook yet. Walk the user through creating one."}
+        return {"exists": True, "summary": get_playbook_summary(), "content": get_playbook()}
+
+    elif name == "update_outreach_playbook":
+        from suplex.outreach.playbook import update_playbook
+        path = update_playbook(args["content"])
+        return {"updated": True, "path": str(path)}
+
+    elif name == "list_mailboxes":
+        from suplex.outreach.mailbox import list_mailboxes
+        return {"mailboxes": list_mailboxes()}
+
+    elif name == "add_mailbox":
+        from suplex.outreach.mailbox import add_mailbox
+        return add_mailbox(args["email"], args.get("display_name", ""), args.get("daily_limit", 10))
+
+    elif name == "create_campaign":
+        import uuid as _uuid
+        campaign_id = _uuid.uuid4().hex[:12]
+        filter_json = {}
+        if args.get("source_filter"):
+            filter_json["source"] = args["source_filter"]
+        if args.get("enriched_only", True):
+            filter_json["enriched_only"] = True
+        cadence = args.get("cadence", [
+            {"step": 1, "delay_days": 0},
+            {"step": 2, "delay_days": 3},
+            {"step": 3, "delay_days": 7},
+        ])
+        store.create_campaign(campaign_id, args["name"], filter_json, cadence,
+                              args["mailbox_id"], args["physical_address"],
+                              args.get("playbook_override"))
+        return {"campaign_id": campaign_id, "name": args["name"]}
+
+    elif name == "preview_outreach":
+        from suplex.outreach.engine import preview_context
+        return preview_context(args["campaign_id"], limit=args.get("limit", 5), store=store)
+
+    elif name == "save_outreach_drafts":
+        from suplex.outreach.engine import save_drafts
+        return {"saved": save_drafts(args["drafts"], args["campaign_id"], args["mailbox_id"], store=store)}
+
+    elif name == "approve_outreach_drafts":
+        from suplex.outreach.engine import approve_drafts, approve_all_drafts
+        if args.get("approve_all") and args.get("campaign_id"):
+            return {"approved": approve_all_drafts(args["campaign_id"], store=store)}
+        elif args.get("outreach_ids"):
+            return {"approved": approve_drafts(args["outreach_ids"], store=store)}
+        return {"error": "Provide outreach_ids or campaign_id with approve_all"}
+
+    elif name == "send_outreach":
+        from suplex.outreach.engine import send_approved
+        return send_approved(args["campaign_id"], limit=args.get("limit", 10), store=store)
+
+    elif name == "check_outreach_replies":
+        from suplex.outreach.engine import check_replies
+        return check_replies(args["mailbox_id"], store=store)
+
+    elif name == "get_due_followups":
+        from suplex.outreach.engine import get_due_followups
+        return {"due": get_due_followups(args["campaign_id"], store=store)}
+
+    elif name == "get_outreach_stats":
+        return store.get_outreach_stats(args["campaign_id"])
 
     else:
         raise ValueError(f"Unknown tool: {name}")

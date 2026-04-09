@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Iterator
 
@@ -108,6 +108,61 @@ CREATE TABLE IF NOT EXISTS sender_profile (
     data TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
+);
+
+-- Outreach: mailboxes, campaigns, sends, suppression.
+
+CREATE TABLE IF NOT EXISTS sender_mailboxes (
+    id TEXT PRIMARY KEY,
+    email TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL DEFAULT '',
+    gws_config_dir TEXT NOT NULL,
+    daily_limit INTEGER NOT NULL DEFAULT 10,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS campaigns (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    filter_json TEXT NOT NULL DEFAULT '{}',
+    cadence_json TEXT NOT NULL DEFAULT '[{"step":1,"delay_days":0},{"step":2,"delay_days":3},{"step":3,"delay_days":7}]',
+    mailbox_id TEXT REFERENCES sender_mailboxes(id),
+    physical_address TEXT NOT NULL DEFAULT '',
+    playbook_override TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS outreach (
+    id TEXT PRIMARY KEY,
+    campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+    lead_id INTEGER NOT NULL REFERENCES leads(id),
+    mailbox_id TEXT REFERENCES sender_mailboxes(id),
+    step INTEGER NOT NULL DEFAULT 1,
+    subject TEXT,
+    body TEXT,
+    status TEXT NOT NULL DEFAULT 'draft',
+    gmail_thread_id TEXT,
+    gmail_message_id TEXT,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    drafted_at TEXT,
+    approved_at TEXT,
+    sent_at TEXT,
+    replied_at TEXT,
+    UNIQUE(campaign_id, lead_id, step)
+);
+
+CREATE INDEX IF NOT EXISTS idx_outreach_campaign ON outreach(campaign_id, status);
+CREATE INDEX IF NOT EXISTS idx_outreach_lead ON outreach(lead_id);
+CREATE INDEX IF NOT EXISTS idx_outreach_mailbox_sent ON outreach(mailbox_id, sent_at);
+
+CREATE TABLE IF NOT EXISTS suppression_list (
+    email TEXT PRIMARY KEY,
+    reason TEXT NOT NULL DEFAULT 'opt_out',
+    source TEXT,
+    created_at TEXT NOT NULL
 );
 """
 
@@ -715,3 +770,240 @@ class LeadStore:
             verification_status=VerificationStatus(row["verification_status"]),
             verified_at=datetime.fromisoformat(row["verified_at"]) if row["verified_at"] else None,
         )
+
+    # ------------------------------------------------------------------
+    # Outreach: mailboxes, campaigns, sends, suppression
+    # ------------------------------------------------------------------
+
+    def add_mailbox(self, mailbox_id: str, email: str, display_name: str,
+                    gws_config_dir: str, daily_limit: int = 10) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO sender_mailboxes (id, email, display_name, gws_config_dir, daily_limit, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (mailbox_id, email, display_name, gws_config_dir, daily_limit,
+                 datetime.utcnow().isoformat()),
+            )
+
+    def list_mailboxes(self, active_only: bool = True) -> list[dict]:
+        with self._conn() as conn:
+            q = "SELECT * FROM sender_mailboxes"
+            if active_only:
+                q += " WHERE active = 1"
+            return [dict(r) for r in conn.execute(q).fetchall()]
+
+    def get_mailbox(self, mailbox_id: str) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM sender_mailboxes WHERE id = ?", (mailbox_id,)).fetchone()
+            return dict(row) if row else None
+
+    def get_mailbox_sends_today(self, mailbox_id: str) -> int:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) as cnt FROM outreach "
+                "WHERE mailbox_id = ? AND status = 'sent' AND DATE(sent_at) = DATE('now')",
+                (mailbox_id,),
+            ).fetchone()
+            return row["cnt"] if row else 0
+
+    def create_campaign(self, campaign_id: str, name: str, filter_json: dict,
+                        cadence_json: list, mailbox_id: str | None,
+                        physical_address: str, playbook_override: str | None = None) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO campaigns (id, name, filter_json, cadence_json, mailbox_id, "
+                "physical_address, playbook_override, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (campaign_id, name, json.dumps(filter_json), json.dumps(cadence_json),
+                 mailbox_id, physical_address, playbook_override,
+                 datetime.utcnow().isoformat()),
+            )
+
+    def get_campaign(self, campaign_id: str) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM campaigns WHERE id = ?", (campaign_id,)).fetchone()
+            if row:
+                d = dict(row)
+                d["filter_json"] = json.loads(d["filter_json"]) if d["filter_json"] else {}
+                d["cadence_json"] = json.loads(d["cadence_json"]) if d["cadence_json"] else []
+                return d
+        return None
+
+    def list_campaigns(self, status: str | None = None) -> list[dict]:
+        with self._conn() as conn:
+            if status:
+                rows = conn.execute("SELECT * FROM campaigns WHERE status = ? ORDER BY created_at DESC", (status,)).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM campaigns ORDER BY created_at DESC").fetchall()
+            result = []
+            for row in rows:
+                d = dict(row)
+                d["filter_json"] = json.loads(d["filter_json"]) if d["filter_json"] else {}
+                d["cadence_json"] = json.loads(d["cadence_json"]) if d["cadence_json"] else []
+                result.append(d)
+            return result
+
+    def create_outreach(self, outreach_id: str, campaign_id: str, lead_id: int,
+                        mailbox_id: str, step: int, subject: str, body: str) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO outreach (id, campaign_id, lead_id, mailbox_id, step, "
+                "subject, body, status, drafted_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'draft', ?)",
+                (outreach_id, campaign_id, lead_id, mailbox_id, step, subject, body,
+                 datetime.utcnow().isoformat()),
+            )
+
+    def approve_outreach(self, outreach_id: str) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE outreach SET status = 'approved', approved_at = ? WHERE id = ? AND status = 'draft'",
+                (datetime.utcnow().isoformat(), outreach_id),
+            )
+
+    def mark_outreach_sent(self, outreach_id: str, gmail_thread_id: str,
+                           gmail_message_id: str) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE outreach SET status = 'sent', sent_at = ?, gmail_thread_id = ?, "
+                "gmail_message_id = ?, attempt_count = attempt_count + 1 "
+                "WHERE id = ? AND status = 'approved'",
+                (datetime.utcnow().isoformat(), gmail_thread_id, gmail_message_id, outreach_id),
+            )
+
+    def mark_outreach_failed(self, outreach_id: str, error: str) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE outreach SET attempt_count = attempt_count + 1, last_error = ? "
+                "WHERE id = ?",
+                (error, outreach_id),
+            )
+
+    def mark_outreach_replied(self, outreach_id: str) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE outreach SET status = 'replied', replied_at = ? WHERE id = ?",
+                (datetime.utcnow().isoformat(), outreach_id),
+            )
+
+    def get_outreach_drafts(self, campaign_id: str, limit: int = 20) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT o.*, l.name as lead_name, l.email as lead_email, l.company as lead_company "
+                "FROM outreach o JOIN leads l ON o.lead_id = l.id "
+                "WHERE o.campaign_id = ? AND o.status = 'draft' LIMIT ?",
+                (campaign_id, limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_approved_outreach(self, campaign_id: str, limit: int = 20) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT o.*, l.name as lead_name, l.email as lead_email, l.company as lead_company "
+                "FROM outreach o JOIN leads l ON o.lead_id = l.id "
+                "WHERE o.campaign_id = ? AND o.status = 'approved' LIMIT ?",
+                (campaign_id, limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_outreach_due_followups(self, campaign_id: str) -> list[dict]:
+        """Get leads due for follow-up: sent, no reply, past delay window."""
+        campaign = self.get_campaign(campaign_id)
+        if not campaign:
+            return []
+        cadence = campaign["cadence_json"]
+        max_step = max(s["step"] for s in cadence) if cadence else 1
+
+        with self._conn() as conn:
+            # Find latest outreach per lead in this campaign.
+            rows = conn.execute(
+                "SELECT o.*, l.name as lead_name, l.email as lead_email, l.company as lead_company "
+                "FROM outreach o JOIN leads l ON o.lead_id = l.id "
+                "WHERE o.campaign_id = ? AND o.status = 'sent' AND o.replied_at IS NULL "
+                "AND o.step < ? "
+                "ORDER BY o.sent_at",
+                (campaign_id, max_step),
+            ).fetchall()
+
+        due = []
+        for row in rows:
+            d = dict(row)
+            current_step = d["step"]
+            next_step = current_step + 1
+            # Find delay for next step.
+            delay = next(
+                (s["delay_days"] for s in cadence if s["step"] == next_step), None
+            )
+            if delay is None:
+                continue
+            sent_at = datetime.fromisoformat(d["sent_at"])
+            due_at = sent_at + timedelta(days=delay)
+            if datetime.utcnow() >= due_at:
+                d["next_step"] = next_step
+                d["due_at"] = due_at.isoformat()
+                due.append(d)
+        return due
+
+    def get_outreach_stats(self, campaign_id: str) -> dict:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT status, COUNT(*) as cnt FROM outreach WHERE campaign_id = ? GROUP BY status",
+                (campaign_id,),
+            ).fetchall()
+            stats = {r["status"]: r["cnt"] for r in rows}
+            stats["total"] = sum(stats.values())
+            return stats
+
+    def get_sent_threads(self, mailbox_id: str) -> list[dict]:
+        """Get all sent outreach with thread IDs for reply checking."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT o.id, o.lead_id, o.gmail_thread_id, o.gmail_message_id, "
+                "l.email as lead_email "
+                "FROM outreach o JOIN leads l ON o.lead_id = l.id "
+                "WHERE o.mailbox_id = ? AND o.status = 'sent' AND o.gmail_thread_id IS NOT NULL",
+                (mailbox_id,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def is_suppressed(self, email: str) -> bool:
+        with self._conn() as conn:
+            row = conn.execute("SELECT 1 FROM suppression_list WHERE email = ?", (email,)).fetchone()
+            return row is not None
+
+    def add_suppression(self, email: str, reason: str = "opt_out", source: str | None = None) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO suppression_list (email, reason, source, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (email, reason, source, datetime.utcnow().isoformat()),
+            )
+
+    def get_eligible_leads(self, campaign_id: str, limit: int = 20) -> list[dict]:
+        """Get leads eligible for outreach: valid email, not suppressed, not already in this campaign."""
+        campaign = self.get_campaign(campaign_id)
+        if not campaign:
+            return []
+        filters = campaign["filter_json"]
+
+        with self._conn() as conn:
+            # Base: valid email, not suppressed, not already contacted in this campaign.
+            q = """
+                SELECT l.* FROM leads l
+                WHERE l.email IS NOT NULL
+                AND l.verification_status IN ('valid', 'catch_all')
+                AND l.email NOT IN (SELECT email FROM suppression_list)
+                AND l.id NOT IN (SELECT lead_id FROM outreach WHERE campaign_id = ?)
+            """
+            params: list = [campaign_id]
+
+            # Apply optional filters.
+            if filters.get("source"):
+                q += " AND l.source = ?"
+                params.append(filters["source"])
+            if filters.get("enriched_only"):
+                q += " AND l.raw_data != '{}'"
+
+            q += " ORDER BY l.scraped_at DESC LIMIT ?"
+            params.append(limit)
+
+            rows = conn.execute(q, params).fetchall()
+            return [dict(r) for r in rows]

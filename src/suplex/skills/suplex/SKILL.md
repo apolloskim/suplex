@@ -339,3 +339,69 @@ Filters are accent-insensitive: `--only Tokyo` matches `Tōkyō`; `--only Noord-
 | `get_stats` | Counts by source and verification status. |
 | `list_jobs` | Recent jobs. |
 | `ensure_reacher` | Pre-start Docker for Reacher. |
+| `get_outreach_playbook` | Read playbook; if none exists, walk user through creating one. |
+| `update_outreach_playbook` | Save updated playbook content. |
+| `list_mailboxes` | List sender mailboxes with today's send count. |
+| `add_mailbox` | Register a new Gmail mailbox for outreach. |
+| `create_campaign` | Create an outreach campaign (filters, cadence, mailbox, address). |
+| `preview_outreach` | Get eligible leads + playbook for drafting. |
+| `save_outreach_drafts` | Save agent-generated email drafts. |
+| `approve_outreach_drafts` | Approve drafts for sending. |
+| `send_outreach` | Send approved emails via gws Gmail. |
+| `check_outreach_replies` | Poll Gmail for replies; auto-detect opt-outs. |
+| `get_due_followups` | Get leads due for follow-up. |
+| `get_outreach_stats` | Campaign stats: drafted, sent, replied, etc. |
+
+## Outreach
+
+Outreach uses the Google Workspace CLI (`gws`) to send emails from the user's own Gmail.
+
+### Setup
+
+1. Install gws: `npm install -g @anthropic/gws` or `brew install gws`
+2. Register a mailbox: `suplex mailbox add user@gmail.com`
+3. Authenticate: run the auth command printed by step 2
+4. Verify: `suplex mailbox verify <mailbox_id>`
+5. Create playbook: `suplex playbook init` (or agent walks user through it)
+
+### Agent workflow
+
+Before drafting emails, ALWAYS:
+1. Check if a playbook exists (`get_outreach_playbook`)
+2. If no playbook, interview the user: tone, angle, CTA, what to avoid — then save it
+3. If playbook exists, show the **summary** (not full content) and ask if they want to adjust
+4. Never send without user reviewing drafts first
+
+The playbook is the user's outreach personality. Update it when they give feedback on drafts.
+
+### Drafting flow
+
+1. `preview_outreach` — get eligible leads + playbook + sender profile
+2. Agent generates personalized emails using lead enrichment data (reviews, posts, headline, about)
+3. `save_outreach_drafts` — store drafts
+4. Show drafts to user for review
+5. `approve_outreach_drafts` — user approves
+6. `send_outreach` — send via gws with rate limits
+
+### Compliance (CAN-SPAM)
+
+Every outreach email MUST include:
+- A conversational opt-out line (not "unsubscribe" — use natural language like "Not relevant? Just let me know.")
+- The campaign's physical postal address
+- These are non-negotiable. The system will not send without them.
+
+Opt-out detection is automatic: when a reply contains "stop", "not interested", "remove me", etc., the lead is added to the suppression list. The agent reading the reply IS the classifier.
+
+### Follow-ups
+
+Default cadence: initial send, +3 days, +7 days. Configurable per campaign.
+- Follow-ups are sent as replies in the same Gmail thread
+- Agent generates fresh copy for each step (different angle, shorter)
+- Stop automatically on: reply, bounce, opt-out
+- `get_due_followups` → agent drafts → user approves → `send_outreach`
+
+### Rate limits
+
+- Default: 10 emails/day per mailbox (configurable, max recommended 20)
+- Sends today is derived from the outreach table, not a stored counter
+- Multiple mailboxes can be registered for rotation

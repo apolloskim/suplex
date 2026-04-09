@@ -838,3 +838,235 @@ def serve() -> None:
 
     mcp_main()
 
+
+# ---------------------------------------------------------------------------
+# Outreach: playbook, mailbox, campaign, send
+# ---------------------------------------------------------------------------
+
+
+@cli.group()
+def playbook() -> None:
+    """Manage the outreach playbook (tone, angle, CTA, footer)."""
+    pass
+
+
+@playbook.command("show")
+def playbook_show() -> None:
+    """Show the current playbook."""
+    from suplex.outreach.playbook import get_playbook
+    text = get_playbook()
+    if text:
+        click.echo(text)
+    else:
+        click.echo("No playbook found. Run: suplex playbook init", err=True)
+
+
+@playbook.command("init")
+def playbook_init() -> None:
+    """Create the default playbook (or reset to defaults)."""
+    from suplex.outreach.playbook import init_playbook
+    path = init_playbook()
+    click.echo(f"Playbook created at {path}")
+    click.echo("Edit it or let the agent refine it through conversation.")
+
+
+@playbook.command("summary")
+def playbook_summary() -> None:
+    """Show a one-line playbook summary."""
+    from suplex.outreach.playbook import get_playbook_summary
+    click.echo(get_playbook_summary())
+
+
+@cli.group()
+def mailbox() -> None:
+    """Manage sender mailboxes (Gmail accounts for outreach)."""
+    pass
+
+
+@mailbox.command("add")
+@click.argument("email")
+@click.option("--name", "-n", default=None, help="Display name")
+@click.option("--daily-limit", "-d", default=10, help="Max emails per day from this mailbox")
+def mailbox_add(email: str, name: str | None, daily_limit: int) -> None:
+    """Register a new Gmail mailbox for outreach."""
+    from suplex.outreach.mailbox import add_mailbox
+    result = add_mailbox(email, display_name=name or "", daily_limit=daily_limit)
+    click.echo(json.dumps(result, indent=2))
+
+
+@mailbox.command("list")
+def mailbox_list() -> None:
+    """List registered mailboxes with today's send count."""
+    from suplex.outreach.mailbox import list_mailboxes
+    mailboxes = list_mailboxes()
+    if not mailboxes:
+        click.echo("No mailboxes registered. Run: suplex mailbox add user@gmail.com")
+        return
+    for mb in mailboxes:
+        status = "active" if mb["active"] else "inactive"
+        click.echo(f"  {mb['id']}  {mb['email']}  {mb['sends_today']}/{mb['daily_limit']} today  [{status}]")
+
+
+@mailbox.command("verify")
+@click.argument("mailbox_id")
+def mailbox_verify(mailbox_id: str) -> None:
+    """Verify a mailbox can send (checks gws auth)."""
+    from suplex.outreach.mailbox import verify_mailbox
+    result = verify_mailbox(mailbox_id)
+    click.echo(json.dumps(result, indent=2))
+
+
+@cli.group()
+def campaign() -> None:
+    """Manage outreach campaigns."""
+    pass
+
+
+@campaign.command("create")
+@click.argument("name")
+@click.option("--mailbox", "-m", required=True, help="Mailbox ID to send from")
+@click.option("--address", "-a", required=True, help="Physical address (CAN-SPAM)")
+@click.option("--source", "-s", default=None, help="Lead source filter (google_maps, linkedin)")
+@click.option("--enriched-only", is_flag=True, default=True, help="Only enriched leads")
+def campaign_create(name: str, mailbox: str, address: str, source: str | None, enriched_only: bool) -> None:
+    """Create a new outreach campaign."""
+    import uuid
+    campaign_id = uuid.uuid4().hex[:12]
+    store = LeadStore()
+
+    filter_json = {}
+    if source:
+        filter_json["source"] = source
+    if enriched_only:
+        filter_json["enriched_only"] = True
+
+    cadence = [
+        {"step": 1, "delay_days": 0},
+        {"step": 2, "delay_days": 3},
+        {"step": 3, "delay_days": 7},
+    ]
+
+    store.create_campaign(campaign_id, name, filter_json, cadence, mailbox, address)
+    click.echo(json.dumps({"campaign_id": campaign_id, "name": name, "mailbox": mailbox}, indent=2))
+
+
+@campaign.command("list")
+def campaign_list() -> None:
+    """List campaigns."""
+    store = LeadStore()
+    campaigns = store.list_campaigns()
+    for c in campaigns:
+        stats = store.get_outreach_stats(c["id"])
+        click.echo(f"  {c['id']}  {c['name']}  [{c['status']}]  {stats}")
+
+
+@campaign.command("show")
+@click.argument("campaign_id")
+def campaign_show(campaign_id: str) -> None:
+    """Show campaign details and stats."""
+    store = LeadStore()
+    campaign = store.get_campaign(campaign_id)
+    if not campaign:
+        click.echo(f"Campaign {campaign_id} not found", err=True)
+        return
+    stats = store.get_outreach_stats(campaign_id)
+    click.echo(json.dumps({**campaign, "stats": stats}, indent=2, default=str))
+
+
+@cli.group()
+def outreach() -> None:
+    """Draft, approve, and send outreach emails."""
+    pass
+
+
+@outreach.command("preview")
+@click.argument("campaign_id")
+@click.option("--limit", "-n", default=5, help="Number of leads to draft for")
+def outreach_preview(campaign_id: str, limit: int) -> None:
+    """Get lead data + playbook for agent to draft emails."""
+    from suplex.outreach.engine import preview_context
+    result = preview_context(campaign_id, limit=limit)
+    click.echo(json.dumps(result, indent=2, default=str))
+
+
+@outreach.command("save-drafts")
+@click.argument("campaign_id")
+@click.argument("mailbox_id")
+@click.argument("drafts_json")
+def outreach_save_drafts(campaign_id: str, mailbox_id: str, drafts_json: str) -> None:
+    """Save agent-generated drafts. DRAFTS_JSON: [{"lead_id":1,"subject":"...","body":"..."}]"""
+    from suplex.outreach.engine import save_drafts
+    drafts = json.loads(drafts_json)
+    result = save_drafts(drafts, campaign_id, mailbox_id)
+    click.echo(json.dumps(result, indent=2))
+
+
+@outreach.command("drafts")
+@click.argument("campaign_id")
+def outreach_drafts(campaign_id: str) -> None:
+    """List pending drafts for a campaign."""
+    store = LeadStore()
+    drafts = store.get_outreach_drafts(campaign_id)
+    for d in drafts:
+        click.echo(f"  {d['id']}  → {d['lead_email']}  \"{d['subject']}\"  [{d['status']}]")
+    click.echo(f"\n{len(drafts)} drafts pending")
+
+
+@outreach.command("approve")
+@click.argument("ids", nargs=-1)
+@click.option("--all", "approve_all", is_flag=True, help="Approve all drafts in campaign")
+@click.option("--campaign", "-c", default=None, help="Campaign ID (required with --all)")
+def outreach_approve(ids: tuple, approve_all: bool, campaign: str | None) -> None:
+    """Approve drafts for sending."""
+    from suplex.outreach.engine import approve_drafts, approve_all_drafts
+    if approve_all:
+        if not campaign:
+            click.echo("--campaign required with --all", err=True)
+            return
+        count = approve_all_drafts(campaign)
+    else:
+        count = approve_drafts(list(ids))
+    click.echo(f"Approved {count} drafts")
+
+
+@outreach.command("send")
+@click.argument("campaign_id")
+@click.option("--limit", "-n", default=10, help="Max emails to send")
+def outreach_send(campaign_id: str, limit: int) -> None:
+    """Send approved outreach emails via gws."""
+    from suplex.outreach.engine import send_approved
+    result = send_approved(campaign_id, limit=limit)
+    click.echo(json.dumps(result, indent=2))
+
+
+@outreach.command("replies")
+@click.argument("mailbox_id")
+def outreach_replies(mailbox_id: str) -> None:
+    """Check for replies to sent outreach emails."""
+    from suplex.outreach.engine import check_replies
+    result = check_replies(mailbox_id)
+    click.echo(json.dumps(result, indent=2))
+
+
+@outreach.command("due")
+@click.argument("campaign_id")
+def outreach_due(campaign_id: str) -> None:
+    """Show follow-ups that are due today."""
+    from suplex.outreach.engine import get_due_followups
+    due = get_due_followups(campaign_id)
+    if not due:
+        click.echo("No follow-ups due")
+        return
+    for d in due:
+        click.echo(f"  {d['lead_email']}  step {d['next_step']}  due {d['due_at']}")
+    click.echo(f"\n{len(due)} follow-ups due")
+
+
+@outreach.command("status")
+@click.argument("campaign_id")
+def outreach_status(campaign_id: str) -> None:
+    """Show outreach stats for a campaign."""
+    store = LeadStore()
+    stats = store.get_outreach_stats(campaign_id)
+    click.echo(json.dumps(stats, indent=2))
+
