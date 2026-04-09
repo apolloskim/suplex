@@ -512,6 +512,8 @@ async def list_tools() -> list[Tool]:
                                 "recently_changed_jobs": {"type": "boolean"},
                                 "only": {"type": "string"},
                                 "exclude": {"type": "string"},
+                                "limit": {"type": "integer", "description": "Max leads (enrich jobs)"},
+                                "linkedin_posts": {"type": "integer", "description": "Posts per lead (enrich jobs)"},
                             },
                             "required": ["type"],
                         },

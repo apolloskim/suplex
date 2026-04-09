@@ -151,6 +151,37 @@ def get_batch_status(batch_id: str) -> dict:
     return status
 
 
+def _meta_to_extra_args(job_type: str, meta: dict) -> list[str]:
+    """Convert batch child meta to CLI extra_args, branched by job type."""
+    extra: list[str] = []
+    # Shared flags.
+    if meta.get("only"):
+        extra.extend(["--only", meta["only"]])
+    if meta.get("exclude"):
+        extra.extend(["--exclude", meta["exclude"]])
+
+    if job_type == "scrape_maps":
+        if meta.get("scraper"):
+            extra.extend(["-s", meta["scraper"]])
+    elif job_type == "scrape_linkedin":
+        _LI_FLAG_MAP = {
+            "titles": "-t", "past_titles": "--past-titles",
+            "companies": "-c", "past_companies": "--past-companies",
+            "industries": "--industries", "seniority": "--seniority",
+            "functions": "--functions", "headcount": "--headcount",
+            "schools": "--schools", "years_exp": "--years-exp",
+            "years_at_company": "--years-at-company",
+            "company_hq": "--company-hq",
+            "profile_languages": "--profile-languages",
+        }
+        for key, flag in _LI_FLAG_MAP.items():
+            if meta.get(key):
+                extra.extend([flag, meta[key]])
+        if meta.get("recently_changed_jobs"):
+            extra.append("--recently-changed-jobs")
+    return extra
+
+
 def _launch_child_job(child: dict) -> None:
     """Launch a single child job from a batch."""
     meta = child.get("meta", {})
@@ -170,26 +201,7 @@ def _launch_child_job(child: dict) -> None:
         query = meta.get("query", "")
         location = meta.get("location", "")
         max_results = meta.get("max_results", 0)
-        extra = []
-        if meta.get("scraper"):
-            extra.extend(["-s", meta["scraper"]])
-        # All LinkedIn filter flags from meta.
-        _META_FLAG_MAP = {
-            "titles": "-t", "past_titles": "--past-titles",
-            "companies": "-c", "past_companies": "--past-companies",
-            "industries": "--industries", "seniority": "--seniority",
-            "functions": "--functions", "headcount": "--headcount",
-            "schools": "--schools", "years_exp": "--years-exp",
-            "years_at_company": "--years-at-company",
-            "company_hq": "--company-hq",
-            "profile_languages": "--profile-languages",
-            "only": "--only", "exclude": "--exclude",
-        }
-        for key, flag in _META_FLAG_MAP.items():
-            if meta.get(key):
-                extra.extend([flag, meta[key]])
-        if meta.get("recently_changed_jobs"):
-            extra.append("--recently-changed-jobs")
+        extra = _meta_to_extra_args(job_type, meta)
         if max_results > 0:
             extra.extend(["-n", str(max_results)])
         launch_scrape_job(source, query, location, max_results=max_results, extra_args=extra, job_id=job_id)
@@ -256,6 +268,19 @@ def resume_job(job_id: str, scraper_override: str | None = None) -> dict:
                 new_extra.append(arg)
             new_extra.extend(["-s", scraper_override])
             extra = new_extra
+        launch_scrape_job(source, query, location, extra_args=extra, job_id=job_id)
+    elif job_type in ("scrape_maps", "scrape_linkedin"):
+        # Batch child jobs — reconstruct extra_args from meta.
+        source = "maps" if job_type == "scrape_maps" else "linkedin"
+        query = meta.get("query", "")
+        location = meta.get("location", "")
+        extra = _meta_to_extra_args(job_type, meta)
+        if scraper_override and job_type == "scrape_maps":
+            extra = [a for i, a in enumerate(extra) if not (a == "-s" or (i > 0 and extra[i - 1] == "-s"))]
+            extra.extend(["-s", scraper_override])
+        max_results = meta.get("max_results", 0)
+        if max_results > 0:
+            extra.extend(["-n", str(max_results)])
         launch_scrape_job(source, query, location, extra_args=extra, job_id=job_id)
     elif job_type == "enrich":
         launch_enrich_job(
