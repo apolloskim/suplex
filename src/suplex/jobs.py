@@ -253,9 +253,8 @@ def resume_job(job_id: str, scraper_override: str | None = None) -> dict:
         query = meta.get("query", "")
         location = meta.get("location", "")
         extra = list(meta.get("extra_args", []))
-        # Apply scraper override (e.g., switch playwright → apify on resume).
-        if scraper_override:
-            # Remove old -s flag from extra_args.
+        # Apply scraper override — only valid for Google Maps, not LinkedIn.
+        if scraper_override and source == "maps":
             new_extra = []
             skip_next = False
             for arg in extra:
@@ -268,6 +267,11 @@ def resume_job(job_id: str, scraper_override: str | None = None) -> dict:
                 new_extra.append(arg)
             new_extra.extend(["-s", scraper_override])
             extra = new_extra
+            # Persist updated args so future resumes use the new scraper.
+            meta["extra_args"] = extra
+            _update_job_meta(store, job_id, meta)
+        elif scraper_override and source == "linkedin":
+            logger.warning("Scraper override ignored — LinkedIn always uses Apify")
         launch_scrape_job(source, query, location, extra_args=extra, job_id=job_id)
     elif job_type in ("scrape_maps", "scrape_linkedin"):
         # Batch child jobs — reconstruct extra_args from meta.
@@ -278,6 +282,10 @@ def resume_job(job_id: str, scraper_override: str | None = None) -> dict:
         if scraper_override and job_type == "scrape_maps":
             extra = [a for i, a in enumerate(extra) if not (a == "-s" or (i > 0 and extra[i - 1] == "-s"))]
             extra.extend(["-s", scraper_override])
+            meta["scraper"] = scraper_override
+            _update_job_meta(store, job_id, meta)
+        elif scraper_override and job_type == "scrape_linkedin":
+            logger.warning("Scraper override ignored — LinkedIn always uses Apify")
         max_results = meta.get("max_results", 0)
         if max_results > 0:
             extra.extend(["-n", str(max_results)])
@@ -386,6 +394,12 @@ def _watchdog_loop(batch_id: str, max_parallel: int, poll_interval: int = 15) ->
                 print(f"Launched {child['id']} ({meta.get('query', '')} / {meta.get('location', '')})")
 
         time.sleep(poll_interval)
+
+
+def _update_job_meta(store: LeadStore, job_id: str, meta: dict) -> None:
+    """Persist updated meta to the job row (e.g., after scraper override on resume)."""
+    with store._conn() as conn:
+        conn.execute("UPDATE jobs SET meta = ? WHERE id = ?", (json.dumps(meta), job_id))
 
 
 def _suplex_bin() -> str:
