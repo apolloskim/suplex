@@ -55,21 +55,86 @@ Apify: polygon-based for US states (customGeolocation), text-based for non-US.
 
 Always Apify. Always full+email mode. **Always pass `-n`.**
 
-**Critical: `-t` titles must be profession-specific, never generic.** "Owner" matches every business owner. Use "Owner Dentist" or "Dental Practice Owner" instead. The search query and title filter work together — query provides context, title enforces precision.
+### Query construction (searchQuery)
+
+The query supports **LinkedIn boolean operators** — use them for precision:
+- `AND` — both terms required: `"dentist AND owner"`
+- `OR` — either term: `"dentist OR dental hygienist"`
+- `NOT` — exclude: `"dentist NOT assistant"`
+- `"quotes"` — exact phrase: `"dental practice owner"`
+- `(parens)` — grouping: `"dentist AND (owner OR founder) NOT assistant"`
+
+Operators must be **UPPERCASE**. Raw text like `dentist owner` is fuzzy and will match loosely.
+
+### Filters (narrow results precisely)
+
+Use filters in combination with the query. The query finds candidates; filters constrain them.
+
+**Most useful filters — use proactively:**
+
+| Flag | Actor param | When to use |
+|------|------------|-------------|
+| `--seniority 320` | seniorityLevelIds | Find owners/partners (320=Owner/Partner, 310=CXO) |
+| `--functions 11` | functionIds | Restrict to function (11=Healthcare, 8=Engineering) |
+| `--industries 901` | industryIds | Restrict to industry ([full list](https://github.com/HarvestAPI/linkedin-industry-codes-v2)) |
+| `--headcount A,B` | companyHeadcount | Small practices (A=Self-employed, B=1-10) |
+| `-t "Dentist"` | currentJobTitles | Exact title match — must be specific, not generic |
+
+**Seniority levels:**
+`100`=In Training, `110`=Entry, `120`=Senior, `130`=Strategic, `200`=Entry Manager, `210`=Experienced Manager, `220`=Director, `300`=VP, `310`=CXO, `320`=Owner/Partner
+
+**Function IDs:**
+`1`=Accounting, `2`=Administrative, `3`=Arts/Design, `4`=BizDev, `5`=Community/Social, `6`=Consulting, `7`=Education, `8`=Engineering, `9`=Entrepreneurship, `10`=Finance, `11`=Healthcare Services, `12`=HR, `13`=IT, `14`=Legal, `15`=Marketing, `16`=Media, `17`=Military, `18`=Operations, `19`=Product, `20`=Program/Project Mgmt, `21`=Purchasing, `22`=QA, `23`=Real Estate, `24`=Research, `25`=Sales, `26`=Customer Success
+
+**Company headcount:** `A`=Self-employed, `B`=1-10, `C`=11-50, `D`=51-200, `E`=201-500, `F`=501-1K, `G`=1K-5K, `H`=5K-10K, `I`=10K+
+
+**Other filters (use when user asks):**
+
+| Flag | Actor param | Values |
+|------|------------|--------|
+| `--past-titles` | pastJobTitles | Exact match on past titles |
+| `-c, --companies` | currentCompanies | LinkedIn company URLs |
+| `--past-companies` | pastCompanies | LinkedIn company URLs |
+| `--schools` | schools | School names (e.g. "Stanford University") |
+| `--years-exp` | yearsOfExperienceIds | 1=<1yr, 2=1-2yr, 3=3-5yr, 4=6-10yr, 5=10+yr |
+| `--years-at-company` | yearsAtCurrentCompanyIds | Same 1-5 scale |
+| `--company-hq` | companyHeadquarterLocations | HQ location text |
+| `--profile-languages` | profileLanguages | English, Spanish, French, German, etc. |
+| `--recently-changed-jobs` | recentlyChangedJobs | Boolean — timing signal for outreach |
+
+### Examples
 
 ```bash
-# Good: specific titles
-suplex scrape linkedin "dental practice owner" -l "Texas" -t "Owner Dentist,Dental Practice Owner" -n 20
-suplex scrape linkedin "dental hygienist" -l "Texas" -t "Dental Hygienist,RDH" -n 20
-suplex scrape linkedin "dental office manager" -l "Texas" -t "Dental Office Manager,Dental Practice Manager" -n 20
+# Dentist practice owners — use boolean query + seniority + function + headcount
+suplex scrape linkedin "dentist" -l "Texas" --seniority 320 --functions 11 --headcount A,B -n 50
 
-# Bad: generic titles — returns garbage (roofers, bookkeepers, etc.)
-# suplex scrape linkedin "dentist owner" -t "Owner,Founder" -n 20  ← DON'T DO THIS
+# Alternative: boolean query with specific title
+suplex scrape linkedin "dentist AND owner" -l "Texas" -t "Dental Practice Owner,Owner Dentist" -n 50
+
+# Dental hygienists — query is specific enough, add function for precision
+suplex scrape linkedin "dental hygienist" -l "Texas" --functions 11 -n 30
+
+# CEOs at small tech companies
+suplex scrape linkedin "CEO" -l "California" --seniority 310 --functions 13 --headcount B,C -n 50
+
+# Recently changed jobs (timing signal for outreach)
+suplex scrape linkedin "dentist" -l "US" --only TX --recently-changed-jobs -n 20
 
 # State filters
 suplex scrape linkedin "dentist" -l "US" --only CA,TX -n 20
 suplex scrape linkedin "dentist" -l "US" --exclude WY -n 20
+
+# BAD: generic title without other filters — returns garbage
+# suplex scrape linkedin "dentist" -t "Owner" -n 20  ← Owner matches EVERY owner
 ```
+
+### Title filter rules
+
+`-t` is an **exact title match** on LinkedIn. Rules:
+1. **Never use generic titles alone** ("Owner", "Founder", "Manager") — they match every profession
+2. **Combine with seniority/function/industry** if you must use generic titles
+3. **Prefer boolean query + structural filters** over `-t` for most searches
+4. `-t` is best for very specific titles: "Dental Hygienist", "RDH", "Pediatric Dentist"
 
 Each lead gets: name, email (pre-verified), title, headline, about, company, experience, education, skills, connections, followers, openToWork, hiring, company website.
 

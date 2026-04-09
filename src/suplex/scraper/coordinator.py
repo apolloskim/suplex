@@ -69,7 +69,10 @@ class ScrapeCoordinator:
                     max_results_per_tile=target.max_results,
                     source=target.source, has_apify=False, store=self.store,
                 )
+                # Merge original target's extra into each tile (preserving tile-specific keys).
                 for t in tiles:
+                    merged = {**target.extra, **t.extra}
+                    t.extra = merged
                     t.extra["tile_scraper"] = self._scraper
 
                 # Filter tiles by --only / --exclude flags.

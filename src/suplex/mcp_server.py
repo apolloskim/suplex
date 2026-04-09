@@ -168,26 +168,125 @@ async def list_tools() -> list[Tool]:
             name="scrape_linkedin",
             description=(
                 "Scrape LinkedIn for people/leads via Apify. "
-                "Returns name, title, company, location, profile URL."
+                "Query supports boolean operators: AND, OR, NOT, \"quotes\", (parens). "
+                "Use filters to narrow results precisely. Always pass max_results."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "LinkedIn search URL or keyword query",
+                        "description": (
+                            "LinkedIn search query. Supports boolean operators: "
+                            "AND, OR, NOT, \"exact phrase\", (grouping). "
+                            "Example: 'dentist AND owner', 'CEO NOT (assistant OR SVP)'"
+                        ),
                     },
                     "location": {
                         "type": "string",
-                        "description": "Location filter",
+                        "description": "Location (city, state, or country — auto-tiled)",
                     },
                     "max_results": {
                         "type": "integer",
-                        "description": "Maximum results to return",
+                        "description": "Maximum results to return. ALWAYS set this.",
                         "default": 50,
                     },
+                    "job_titles": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Current job titles filter (exact match). Example: ['Dental Practice Owner', 'Dentist']",
+                    },
+                    "past_job_titles": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Past job titles filter (exact match)",
+                    },
+                    "seniority_levels": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Seniority level IDs. "
+                            "100=In Training, 110=Entry, 120=Senior, 130=Strategic, "
+                            "200=Entry Manager, 210=Experienced Manager, 220=Director, "
+                            "300=VP, 310=CXO, 320=Owner/Partner"
+                        ),
+                    },
+                    "function_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Function IDs. "
+                            "1=Accounting, 4=BizDev, 7=Education, 8=Engineering, "
+                            "9=Entrepreneurship, 10=Finance, 11=Healthcare Services, "
+                            "13=IT, 14=Legal, 15=Marketing, 18=Operations, 25=Sales"
+                        ),
+                    },
+                    "industry_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Industry IDs (numeric). See: "
+                            "github.com/HarvestAPI/linkedin-industry-codes-v2"
+                        ),
+                    },
+                    "company_headcount": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Company size codes. "
+                            "A=Self-employed, B=1-10, C=11-50, D=51-200, "
+                            "E=201-500, F=501-1K, G=1K-5K, H=5K-10K, I=10K+"
+                        ),
+                    },
+                    "current_companies": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Current companies (LinkedIn company URLs)",
+                    },
+                    "past_companies": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Past companies (LinkedIn company URLs)",
+                    },
+                    "schools": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Schools filter",
+                    },
+                    "years_experience": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Years of experience IDs. 1=<1yr, 2=1-2, 3=3-5, 4=6-10, 5=10+",
+                    },
+                    "years_at_company": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Years at current company IDs. Same scale as years_experience.",
+                    },
+                    "company_hq_locations": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Company HQ locations filter",
+                    },
+                    "profile_languages": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Profile languages (e.g. English, Spanish, French)",
+                    },
+                    "recently_changed_jobs": {
+                        "type": "boolean",
+                        "description": "Only people who recently changed jobs",
+                    },
+                    "only_regions": {
+                        "type": "string",
+                        "description": "Only include these regions (comma-separated, e.g. CA,TX)",
+                    },
+                    "exclude_regions": {
+                        "type": "string",
+                        "description": "Exclude these regions (comma-separated)",
+                    },
                 },
-                "required": ["query"],
+                "required": ["query", "max_results"],
             },
         ),
         Tool(
@@ -538,11 +637,38 @@ async def _dispatch(name: str, args: dict) -> dict:
         return {"count": len(leads), "leads": [l.model_dump() for l in leads[:20]]}
 
     elif name == "scrape_linkedin":
+        extra: dict = {"mode": "full_with_email"}
+        # Map MCP args to extra dict keys that _build_input() reads.
+        _EXTRA_MAP = {
+            "job_titles": "job_titles",
+            "past_job_titles": "past_job_titles",
+            "seniority_levels": "seniority_levels",
+            "function_ids": "functions",
+            "industry_ids": "industries",
+            "company_headcount": "company_headcount",
+            "current_companies": "current_companies",
+            "past_companies": "past_companies",
+            "schools": "schools",
+            "years_experience": "years_experience",
+            "years_at_company": "years_at_company",
+            "company_hq_locations": "company_hq_locations",
+            "profile_languages": "profile_languages",
+        }
+        for mcp_key, extra_key in _EXTRA_MAP.items():
+            if args.get(mcp_key):
+                extra[extra_key] = args[mcp_key]
+        if args.get("recently_changed_jobs"):
+            extra["recently_changed_jobs"] = True
+        if args.get("only_regions"):
+            extra["only_states"] = [s.strip().upper() for s in args["only_regions"].split(",")]
+        if args.get("exclude_regions"):
+            extra["exclude_states"] = [s.strip().upper() for s in args["exclude_regions"].split(",")]
         target = ScrapeTarget(
             source=LeadSource.LINKEDIN,
             query=args["query"],
             location=args.get("location"),
             max_results=args.get("max_results", 50),
+            extra=extra,
         )
         leads = await coordinator.run([target])
         return {"count": len(leads), "leads": [l.model_dump() for l in leads[:20]]}
@@ -612,8 +738,23 @@ async def _dispatch(name: str, args: dict) -> dict:
             return launch_scrape_job("maps", args.get("query", ""), args.get("location", ""), extra_args=extra)
         elif job_type == "scrape_linkedin":
             extra = []
-            if args.get("titles"):
-                extra.extend(["-t", args["titles"]])
+            _BG_FLAG_MAP = {
+                "titles": "-t", "past_titles": "--past-titles",
+                "companies": "-c", "past_companies": "--past-companies",
+                "industries": "--industries", "seniority": "--seniority",
+                "functions": "--functions", "headcount": "--headcount",
+                "schools": "--schools", "years_exp": "--years-exp",
+                "years_at_company": "--years-at-company",
+                "company_hq": "--company-hq",
+                "profile_languages": "--profile-languages",
+            }
+            for key, flag in _BG_FLAG_MAP.items():
+                if args.get(key):
+                    extra.extend([flag, args[key]])
+            if args.get("recently_changed_jobs"):
+                extra.append("--recently-changed-jobs")
+            if args.get("max_results"):
+                extra.extend(["-n", str(args["max_results"])])
             return launch_scrape_job("linkedin", args.get("query", ""), args.get("location", ""), extra_args=extra)
         elif job_type == "enrich":
             return launch_enrich_job(limit=args.get("limit", 100), linkedin_posts=args.get("linkedin_posts", 1))

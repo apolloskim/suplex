@@ -305,9 +305,20 @@ def scrape_maps(query: str, location: str | None, max_results: int, scraper: str
 @scrape.command("linkedin")
 @click.argument("query")
 @click.option("--location", "-l", default=None, help="Location (city, state, or country — auto-tiled)")
-@click.option("--titles", "-t", default=None, help="Job titles (comma-separated)")
+@click.option("--titles", "-t", default=None, help="Current job titles filter (comma-separated)")
+@click.option("--past-titles", default=None, help="Past job titles filter (comma-separated)")
 @click.option("--companies", "-c", default=None, help="Current companies (comma-separated LinkedIn URLs)")
-@click.option("--industries", default=None, help="Industry IDs (comma-separated)")
+@click.option("--past-companies", default=None, help="Past companies (comma-separated LinkedIn URLs)")
+@click.option("--industries", default=None, help="Industry IDs (comma-separated, e.g. 4=Software,43=Financial)")
+@click.option("--seniority", default=None, help="Seniority level IDs (comma-separated, e.g. 320=Owner/Partner,310=CXO)")
+@click.option("--functions", default=None, help="Function IDs (comma-separated, e.g. 11=Healthcare,8=Engineering)")
+@click.option("--headcount", default=None, help="Company headcount codes (comma-separated, e.g. A=Self-employed,B=1-10)")
+@click.option("--schools", default=None, help="Schools filter (comma-separated)")
+@click.option("--years-exp", default=None, help="Years of experience IDs (comma-separated, 1=<1yr,2=1-2,3=3-5,4=6-10,5=10+)")
+@click.option("--years-at-company", default=None, help="Years at current company IDs (comma-separated, same scale)")
+@click.option("--company-hq", default=None, help="Company HQ locations (comma-separated)")
+@click.option("--profile-languages", default=None, help="Profile languages (comma-separated, e.g. English,Spanish)")
+@click.option("--recently-changed-jobs", is_flag=True, default=False, help="Only people who recently changed jobs")
 @click.option("--mode", "-m", type=click.Choice(["short", "full", "full_with_email"]), default="full_with_email")
 @click.option("--max-results", "-n", default=0, help="Max results (0 = exhaust)")
 @click.option("--only", default=None, help="Only include these states (comma-separated)")
@@ -315,11 +326,19 @@ def scrape_maps(query: str, location: str | None, max_results: int, scraper: str
 @click.option("--enrich/--no-enrich", default=True, help="Auto-enrich after scraping (default: yes)")
 @click.option("--apify-token", envvar="APIFY_TOKEN", default=None)
 def scrape_linkedin(
-    query: str, location: str | None, titles: str | None, companies: str | None,
-    industries: str | None, mode: str, max_results: int, only: str | None, exclude: str | None,
+    query: str, location: str | None, titles: str | None, past_titles: str | None,
+    companies: str | None, past_companies: str | None, industries: str | None,
+    seniority: str | None, functions: str | None, headcount: str | None,
+    schools: str | None, years_exp: str | None, years_at_company: str | None,
+    company_hq: str | None, profile_languages: str | None, recently_changed_jobs: bool,
+    mode: str, max_results: int, only: str | None, exclude: str | None,
     enrich: bool, apify_token: str | None,
 ) -> None:
-    """Scrape LinkedIn for people leads."""
+    """Scrape LinkedIn for people leads.
+
+    QUERY supports LinkedIn boolean operators: AND, OR, NOT, "quotes", (parens).
+    Example: "dentist AND owner", "CEO NOT (assistant OR SVP)"
+    """
     from suplex.config import Config
     from suplex.scraper.coordinator import ScrapeCoordinator
 
@@ -330,10 +349,32 @@ def scrape_linkedin(
     extra: dict = {"mode": mode}
     if titles:
         extra["job_titles"] = [t.strip() for t in titles.split(",")]
+    if past_titles:
+        extra["past_job_titles"] = [t.strip() for t in past_titles.split(",")]
     if companies:
         extra["current_companies"] = [c.strip() for c in companies.split(",")]
+    if past_companies:
+        extra["past_companies"] = [c.strip() for c in past_companies.split(",")]
     if industries:
         extra["industries"] = [i.strip() for i in industries.split(",")]
+    if seniority:
+        extra["seniority_levels"] = [s.strip() for s in seniority.split(",")]
+    if functions:
+        extra["functions"] = [f.strip() for f in functions.split(",")]
+    if headcount:
+        extra["company_headcount"] = [h.strip() for h in headcount.split(",")]
+    if schools:
+        extra["schools"] = [s.strip() for s in schools.split(",")]
+    if years_exp:
+        extra["years_experience"] = [y.strip() for y in years_exp.split(",")]
+    if years_at_company:
+        extra["years_at_company"] = [y.strip() for y in years_at_company.split(",")]
+    if company_hq:
+        extra["company_hq_locations"] = [l.strip() for l in company_hq.split(",")]
+    if profile_languages:
+        extra["profile_languages"] = [l.strip() for l in profile_languages.split(",")]
+    if recently_changed_jobs:
+        extra["recently_changed_jobs"] = True
     if only:
         extra["only_states"] = [s.strip().upper() for s in only.split(",")]
     if exclude:
@@ -667,17 +708,72 @@ def run_scrape_maps(query: str, location: str, max_results: int, scraper: str, n
 @run.command("scrape-linkedin")
 @click.argument("query")
 @click.option("--location", "-l", required=True, help="Location")
-@click.option("--titles", "-t", default=None, help="Job titles (comma-separated)")
+@click.option("--titles", "-t", default=None, help="Current job titles (comma-separated)")
+@click.option("--past-titles", default=None, help="Past job titles (comma-separated)")
+@click.option("--companies", "-c", default=None, help="Current companies (comma-separated)")
+@click.option("--past-companies", default=None, help="Past companies (comma-separated)")
+@click.option("--industries", default=None, help="Industry IDs (comma-separated)")
+@click.option("--seniority", default=None, help="Seniority level IDs (comma-separated)")
+@click.option("--functions", default=None, help="Function IDs (comma-separated)")
+@click.option("--headcount", default=None, help="Company headcount codes (comma-separated)")
+@click.option("--schools", default=None, help="Schools filter (comma-separated)")
+@click.option("--years-exp", default=None, help="Years of experience IDs (comma-separated)")
+@click.option("--years-at-company", default=None, help="Years at current company IDs (comma-separated)")
+@click.option("--company-hq", default=None, help="Company HQ locations (comma-separated)")
+@click.option("--profile-languages", default=None, help="Profile languages (comma-separated)")
+@click.option("--recently-changed-jobs", is_flag=True, default=False, help="Recently changed jobs filter")
 @click.option("--max-results", "-n", default=0, help="Max results (0=exhaust)")
+@click.option("--only", default=None, help="Only include these regions (comma-separated)")
+@click.option("--exclude", default=None, help="Exclude these regions (comma-separated)")
 @click.option("--no-enrich", is_flag=True, default=False, help="Skip auto-enrichment")
-def run_scrape_linkedin(query: str, location: str, titles: str | None, max_results: int, no_enrich: bool) -> None:
-    """Launch LinkedIn scrape + enrich in background."""
+def run_scrape_linkedin(
+    query: str, location: str, titles: str | None, past_titles: str | None,
+    companies: str | None, past_companies: str | None, industries: str | None,
+    seniority: str | None, functions: str | None, headcount: str | None,
+    schools: str | None, years_exp: str | None, years_at_company: str | None,
+    company_hq: str | None, profile_languages: str | None, recently_changed_jobs: bool,
+    max_results: int, only: str | None, exclude: str | None, no_enrich: bool,
+) -> None:
+    """Launch LinkedIn scrape + enrich in background.
+
+    QUERY supports LinkedIn boolean operators: AND, OR, NOT, "quotes", (parens).
+    """
     from suplex.jobs import launch_scrape_job
     extra = []
     if titles:
         extra.extend(["-t", titles])
+    if past_titles:
+        extra.extend(["--past-titles", past_titles])
+    if companies:
+        extra.extend(["-c", companies])
+    if past_companies:
+        extra.extend(["--past-companies", past_companies])
+    if industries:
+        extra.extend(["--industries", industries])
+    if seniority:
+        extra.extend(["--seniority", seniority])
+    if functions:
+        extra.extend(["--functions", functions])
+    if headcount:
+        extra.extend(["--headcount", headcount])
+    if schools:
+        extra.extend(["--schools", schools])
+    if years_exp:
+        extra.extend(["--years-exp", years_exp])
+    if years_at_company:
+        extra.extend(["--years-at-company", years_at_company])
+    if company_hq:
+        extra.extend(["--company-hq", company_hq])
+    if profile_languages:
+        extra.extend(["--profile-languages", profile_languages])
+    if recently_changed_jobs:
+        extra.append("--recently-changed-jobs")
     if max_results > 0:
         extra.extend(["-n", str(max_results)])
+    if only:
+        extra.extend(["--only", only])
+    if exclude:
+        extra.extend(["--exclude", exclude])
     if no_enrich:
         extra.append("--no-enrich")
     result = launch_scrape_job("linkedin", query, location, max_results=max_results, extra_args=extra)

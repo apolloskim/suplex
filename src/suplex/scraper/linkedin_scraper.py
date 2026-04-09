@@ -43,6 +43,27 @@ SEGMENT_COUNTRIES = {
 }
 
 
+GENERIC_TITLES = {
+    "owner", "founder", "manager", "director", "ceo", "cto", "cfo", "coo",
+    "president", "vp", "vice president", "partner", "associate", "lead",
+    "head", "chief", "executive", "administrator", "coordinator", "supervisor",
+    "officer", "specialist", "consultant", "analyst", "engineer", "developer",
+}
+
+
+def _warn_generic_titles(titles: list[str], query: str) -> None:
+    """Warn if titles are too generic — they'll match unrelated professionals."""
+    for title in titles:
+        words = set(title.lower().split())
+        if words and words.issubset(GENERIC_TITLES):
+            logger.warning(
+                "Generic title '%s' will match ALL %s in the location, not just '%s'. "
+                "Use profession-specific titles like 'Owner Dentist' instead of 'Owner'. "
+                "This WILL waste Apify credits on irrelevant results.",
+                title, title.lower() + "s", query,
+            )
+
+
 class LinkedInScraper:
     """Scrapes LinkedIn people search via Apify's HarvestAPI actor."""
 
@@ -127,6 +148,7 @@ class LinkedInScraper:
 
         # Job filters.
         if extra.get("job_titles"):
+            _warn_generic_titles(extra["job_titles"], query)
             run_input["currentJobTitles"] = extra["job_titles"]
         if extra.get("past_job_titles"):
             run_input["pastJobTitles"] = extra["past_job_titles"]

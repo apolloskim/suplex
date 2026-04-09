@@ -19,12 +19,13 @@ suplex regions --search "North Holland"  # find local name (Noord-Holland)
 suplex scrape maps "query" -l "location" -s playwright|apify -n 20 -r 5
 suplex scrape maps "query" -l US --only CA,TX,NY -n 20
 suplex scrape maps "query" -l US --exclude WY,VT -n 20
-suplex scrape linkedin "query" -l "location" -t "titles" -n 20
+suplex scrape linkedin "query AND keyword" -l "location" --seniority 320 --functions 11 -n 20
+suplex scrape linkedin "query" -l "location" -t "Specific Title" --headcount A,B -n 20
 suplex scrape website https://example.com
 
 # Scrape (background, auto-enriches by default)
 suplex run scrape-maps "query" -l "location" -s playwright -n 20
-suplex run scrape-linkedin "query" -l "location" -n 20 -t "titles"
+suplex run scrape-linkedin "query AND keyword" -l "location" --seniority 320 --functions 11 -n 20
 suplex run enrich
 
 # Enrich (standalone)
@@ -72,6 +73,10 @@ suplex serve           # MCP server (stdio)
 - Scraping auto-enriches by default (--enrich flag, on by default)
 - Google Maps: Playwright (free, 500/day) or Apify (paid, budget-enforced). Reviews via RPC API.
 - LinkedIn: Apify only. Full+email mode. Pre-verified emails. All SDR signals stored.
+- LinkedIn query supports boolean operators (AND, OR, NOT, "quotes", parens) — use them.
+- LinkedIn filters: --seniority, --functions, --industries, --headcount, -t, --companies, etc.
+- For owners: `--seniority 320`. For healthcare: `--functions 11`. For small biz: `--headcount A,B`.
+- Never use generic titles alone (-t "Owner") — combine with seniority/function filters.
 - Batch jobs: parent/child in SQLite, watchdog auto-advances when slots open. No polling needed.
 - Resume: `suplex resume <id>` — done tiles skipped, failed tiles retried, exact flags preserved.
 - `--only` / `--exclude`: filter tiles by region. Accent-insensitive, works globally. Agent checks `suplex jobs` for completed regions, excludes them on next run.
