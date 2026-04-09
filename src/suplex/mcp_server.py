@@ -422,8 +422,24 @@ async def list_tools() -> list[Tool]:
                     },
                     "titles": {
                         "type": "string",
-                        "description": "Job titles, comma-separated (for LinkedIn scrape)",
+                        "description": "Current job titles, comma-separated (LinkedIn)",
                     },
+                    "past_titles": {"type": "string", "description": "Past job titles, comma-separated (LinkedIn)"},
+                    "companies": {"type": "string", "description": "Current companies, comma-separated (LinkedIn)"},
+                    "past_companies": {"type": "string", "description": "Past companies, comma-separated (LinkedIn)"},
+                    "industries": {"type": "string", "description": "Industry IDs, comma-separated (LinkedIn)"},
+                    "seniority": {"type": "string", "description": "Seniority IDs (320=Owner/Partner,310=CXO) (LinkedIn)"},
+                    "functions": {"type": "string", "description": "Function IDs (11=Healthcare,8=Engineering) (LinkedIn)"},
+                    "headcount": {"type": "string", "description": "Company headcount codes (A=Self-employed,B=1-10) (LinkedIn)"},
+                    "schools": {"type": "string", "description": "Schools, comma-separated (LinkedIn)"},
+                    "years_exp": {"type": "string", "description": "Years experience IDs 1-5 (LinkedIn)"},
+                    "years_at_company": {"type": "string", "description": "Years at company IDs 1-5 (LinkedIn)"},
+                    "company_hq": {"type": "string", "description": "Company HQ locations (LinkedIn)"},
+                    "profile_languages": {"type": "string", "description": "Profile languages (LinkedIn)"},
+                    "recently_changed_jobs": {"type": "boolean", "description": "Recently changed jobs (LinkedIn)"},
+                    "max_results": {"type": "integer", "description": "Max results (for scrape jobs)"},
+                    "only": {"type": "string", "description": "Only these regions, comma-separated"},
+                    "exclude": {"type": "string", "description": "Exclude these regions, comma-separated"},
                     "limit": {
                         "type": "integer",
                         "description": "Max leads (for enrich jobs)",
@@ -478,8 +494,24 @@ async def list_tools() -> list[Tool]:
                                 "type": {"type": "string", "enum": ["scrape_maps", "scrape_linkedin", "enrich"]},
                                 "query": {"type": "string"},
                                 "location": {"type": "string"},
+                                "max_results": {"type": "integer"},
                                 "scraper": {"type": "string", "enum": ["auto", "playwright", "apify"]},
                                 "titles": {"type": "string"},
+                                "past_titles": {"type": "string"},
+                                "companies": {"type": "string"},
+                                "past_companies": {"type": "string"},
+                                "industries": {"type": "string"},
+                                "seniority": {"type": "string"},
+                                "functions": {"type": "string"},
+                                "headcount": {"type": "string"},
+                                "schools": {"type": "string"},
+                                "years_exp": {"type": "string"},
+                                "years_at_company": {"type": "string"},
+                                "company_hq": {"type": "string"},
+                                "profile_languages": {"type": "string"},
+                                "recently_changed_jobs": {"type": "boolean"},
+                                "only": {"type": "string"},
+                                "exclude": {"type": "string"},
                             },
                             "required": ["type"],
                         },
@@ -735,6 +767,12 @@ async def _dispatch(name: str, args: dict) -> dict:
             scraper = args.get("scraper", "auto")
             if scraper != "auto":
                 extra.extend(["-s", scraper])
+            if args.get("max_results"):
+                extra.extend(["-n", str(args["max_results"])])
+            if args.get("only"):
+                extra.extend(["--only", args["only"]])
+            if args.get("exclude"):
+                extra.extend(["--exclude", args["exclude"]])
             return launch_scrape_job("maps", args.get("query", ""), args.get("location", ""), extra_args=extra)
         elif job_type == "scrape_linkedin":
             extra = []
@@ -755,6 +793,10 @@ async def _dispatch(name: str, args: dict) -> dict:
                 extra.append("--recently-changed-jobs")
             if args.get("max_results"):
                 extra.extend(["-n", str(args["max_results"])])
+            if args.get("only"):
+                extra.extend(["--only", args["only"]])
+            if args.get("exclude"):
+                extra.extend(["--exclude", args["exclude"]])
             return launch_scrape_job("linkedin", args.get("query", ""), args.get("location", ""), extra_args=extra)
         elif job_type == "enrich":
             return launch_enrich_job(limit=args.get("limit", 100), linkedin_posts=args.get("linkedin_posts", 1))

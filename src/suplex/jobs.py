@@ -173,8 +173,23 @@ def _launch_child_job(child: dict) -> None:
         extra = []
         if meta.get("scraper"):
             extra.extend(["-s", meta["scraper"]])
-        if meta.get("titles"):
-            extra.extend(["-t", meta["titles"]])
+        # All LinkedIn filter flags from meta.
+        _META_FLAG_MAP = {
+            "titles": "-t", "past_titles": "--past-titles",
+            "companies": "-c", "past_companies": "--past-companies",
+            "industries": "--industries", "seniority": "--seniority",
+            "functions": "--functions", "headcount": "--headcount",
+            "schools": "--schools", "years_exp": "--years-exp",
+            "years_at_company": "--years-at-company",
+            "company_hq": "--company-hq",
+            "profile_languages": "--profile-languages",
+            "only": "--only", "exclude": "--exclude",
+        }
+        for key, flag in _META_FLAG_MAP.items():
+            if meta.get(key):
+                extra.extend([flag, meta[key]])
+        if meta.get("recently_changed_jobs"):
+            extra.append("--recently-changed-jobs")
         if max_results > 0:
             extra.extend(["-n", str(max_results)])
         launch_scrape_job(source, query, location, max_results=max_results, extra_args=extra, job_id=job_id)
