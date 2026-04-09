@@ -55,11 +55,20 @@ Apify: polygon-based for US states (customGeolocation), text-based for non-US.
 
 Always Apify. Always full+email mode. **Always pass `-n`.**
 
+**Critical: `-t` titles must be profession-specific, never generic.** "Owner" matches every business owner. Use "Owner Dentist" or "Dental Practice Owner" instead. The search query and title filter work together — query provides context, title enforces precision.
+
 ```bash
-suplex scrape linkedin "dental hygienist" -l "Texas" -n 20
-suplex scrape linkedin "" -l "US" -t "Office Manager" -n 50
-suplex scrape linkedin "dentist" -l "US" --only CA,TX -n 20      # only these states
-suplex scrape linkedin "dentist" -l "US" --exclude WY -n 20      # skip done states
+# Good: specific titles
+suplex scrape linkedin "dental practice owner" -l "Texas" -t "Owner Dentist,Dental Practice Owner" -n 20
+suplex scrape linkedin "dental hygienist" -l "Texas" -t "Dental Hygienist,RDH" -n 20
+suplex scrape linkedin "dental office manager" -l "Texas" -t "Dental Office Manager,Dental Practice Manager" -n 20
+
+# Bad: generic titles — returns garbage (roofers, bookkeepers, etc.)
+# suplex scrape linkedin "dentist owner" -t "Owner,Founder" -n 20  ← DON'T DO THIS
+
+# State filters
+suplex scrape linkedin "dentist" -l "US" --only CA,TX -n 20
+suplex scrape linkedin "dentist" -l "US" --exclude WY -n 20
 ```
 
 Each lead gets: name, email (pre-verified), title, headline, about, company, experience, education, skills, connections, followers, openToWork, hiring, company website.
