@@ -790,8 +790,148 @@ def run_enrich(limit: int, linkedin_posts: int) -> None:
     click.echo(json.dumps(result, indent=2))
 
 
+@run.command("watch-reddit")
+@click.option("--subreddit", required=True, help="Subreddit name without r/.")
+@click.option("--sort", type=click.Choice(["best", "hot", "new", "top", "rising"]), default="new", show_default=True, help="Feed sort, matching the Reddit subreddit UI.")
+@click.option("--time", "time_window", type=click.Choice(["hour", "day", "week", "month", "year", "all"]), default="month", show_default=True, help="Time bucket for top-sorted feeds.")
+@click.option("--query", default="", help="Optional case-insensitive substring match against title + selftext.")
+@click.option("--policy", type=click.Choice(["conservative", "balanced", "aggressive"]), default="balanced", show_default=True, help="Preset hydration/revisit policy.")
+@click.option("--hydrate-mode", type=click.Choice(["off", "manual", "rules"]), default=None, help="Override hydration behavior.")
+@click.option("--min-age-minutes", type=int, default=None, help="Minimum post age before rules-based hydration can queue a post.")
+@click.option("--hydrate-min-score", type=int, default=None, help="Rules-based hydration threshold for score.")
+@click.option("--hydrate-min-comments", type=int, default=None, help="Rules-based hydration threshold for comment count.")
+@click.option("--revisit-after-minutes", default=None, help="Comma-separated revisit schedule in minutes, e.g. 15,60,360.")
+@click.option("--interval-seconds", default=30, show_default=True, help="Seconds between feed polls.")
+@click.option("--limit", "-n", default=25, show_default=True, help="Newest posts to fetch per poll.")
+@click.option("--browser-executable", default=None, help="Browser executable path. Defaults to your primary browser when detectable.")
+@click.option("--headful", is_flag=True, default=False, help="Open a visible browser window.")
+def run_watch_reddit(
+    subreddit: str,
+    sort: str,
+    time_window: str,
+    query: str,
+    policy: str,
+    hydrate_mode: str | None,
+    min_age_minutes: int | None,
+    hydrate_min_score: int | None,
+    hydrate_min_comments: int | None,
+    revisit_after_minutes: str | None,
+    interval_seconds: int,
+    limit: int,
+    browser_executable: str | None,
+    headful: bool,
+) -> None:
+    """Launch a live Reddit subreddit watcher in the background."""
+    from suplex.jobs import launch_reddit_watch_job
+
+    result = launch_reddit_watch_job(
+        subreddit,
+        sort=sort,
+        time_window=time_window,
+        query=query,
+        policy=policy,
+        hydrate_mode=hydrate_mode,
+        min_age_minutes=min_age_minutes,
+        hydrate_min_score=hydrate_min_score,
+        hydrate_min_comments=hydrate_min_comments,
+        revisit_after_minutes=revisit_after_minutes,
+        interval_seconds=interval_seconds,
+        limit=limit,
+        browser_executable=browser_executable,
+        headful=headful,
+    )
+    click.echo(json.dumps(result, indent=2))
+
+
+@run.command("revisit-reddit")
+@click.option("--subreddit", default=None, help="Optional subreddit filter.")
+@click.option("--policy", type=click.Choice(["conservative", "balanced", "aggressive"]), default=None, help="Optional policy override. Defaults to each post's stored watch policy.")
+@click.option("--hydrate-mode", type=click.Choice(["off", "manual", "rules"]), default=None, help="Override hydration behavior.")
+@click.option("--min-age-minutes", type=int, default=None, help="Minimum post age before rules-based hydration can queue a post.")
+@click.option("--hydrate-min-score", type=int, default=None, help="Rules-based hydration threshold for score.")
+@click.option("--hydrate-min-comments", type=int, default=None, help="Rules-based hydration threshold for comment count.")
+@click.option("--revisit-after-minutes", default=None, help="Comma-separated revisit schedule in minutes, e.g. 15,60,360.")
+@click.option("--limit", "-n", default=25, show_default=True, help="Due posts to revisit this run.")
+@click.option("--browser-executable", default=None, help="Browser executable path. Defaults to your primary browser when detectable.")
+@click.option("--headful", is_flag=True, default=False, help="Open a visible browser window.")
+def run_revisit_reddit(
+    subreddit: str | None,
+    policy: str | None,
+    hydrate_mode: str | None,
+    min_age_minutes: int | None,
+    hydrate_min_score: int | None,
+    hydrate_min_comments: int | None,
+    revisit_after_minutes: str | None,
+    limit: int,
+    browser_executable: str | None,
+    headful: bool,
+) -> None:
+    """Revisit due Reddit posts and re-score them for hydration."""
+    from suplex.jobs import launch_reddit_revisit_job
+
+    result = launch_reddit_revisit_job(
+        subreddit=subreddit,
+        policy=policy,
+        hydrate_mode=hydrate_mode,
+        min_age_minutes=min_age_minutes,
+        hydrate_min_score=hydrate_min_score,
+        hydrate_min_comments=hydrate_min_comments,
+        revisit_after_minutes=revisit_after_minutes,
+        limit=limit,
+        browser_executable=browser_executable,
+        headful=headful,
+    )
+    click.echo(json.dumps(result, indent=2))
+
+
+@run.command("hydrate-reddit")
+@click.option("--subreddit", default=None, help="Optional subreddit filter when hydrating queued posts.")
+@click.option("--post-id", multiple=True, help="Explicit post id to hydrate. Repeat to pass more than one.")
+@click.option("--comments-limit", default=25, show_default=True, help="Comments to keep per hydrated post. Use 0 for all.")
+@click.option("--comment-sort", type=click.Choice(["best", "new", "top", "old", "controversial", "qa"]), default="best", show_default=True, help="Comment sort to request during hydration.")
+@click.option("--expand-replies", is_flag=True, default=False, help="Expand more-replies branches during hydration.")
+@click.option("--reply-pages-limit", default=20, show_default=True, help="Max reply pages / morechildren fetches during hydration.")
+@click.option("--limit", "-n", default=25, show_default=True, help="Queued posts to hydrate this run.")
+@click.option("--browser-executable", default=None, help="Browser executable path. Defaults to your primary browser when detectable.")
+@click.option("--headful", is_flag=True, default=False, help="Open a visible browser window.")
+@click.option("--debug", is_flag=True, default=False, help="Include extra hydration debugging fields.")
+def run_hydrate_reddit(
+    subreddit: str | None,
+    post_id: tuple[str, ...],
+    comments_limit: int,
+    comment_sort: str,
+    expand_replies: bool,
+    reply_pages_limit: int,
+    limit: int,
+    browser_executable: str | None,
+    headful: bool,
+    debug: bool,
+) -> None:
+    """Hydrate queued or explicit Reddit posts using the deep extractor."""
+    from suplex.jobs import launch_reddit_hydrate_job
+
+    result = launch_reddit_hydrate_job(
+        subreddit=subreddit,
+        post_ids=list(post_id),
+        limit=limit,
+        comments_limit=comments_limit,
+        comment_sort=comment_sort,
+        expand_replies=expand_replies,
+        reply_pages_limit=reply_pages_limit,
+        browser_executable=browser_executable,
+        headful=headful,
+        debug=debug,
+    )
+    click.echo(json.dumps(result, indent=2))
+
+
 @cli.command("jobs")
-@click.option("--status", "-s", type=click.Choice(["running", "done", "failed", "pending"]), default=None)
+@click.option(
+    "--status",
+    "-s",
+    type=click.Choice(["running", "done", "done_with_errors", "failed", "pending", "stopped"]),
+    default=None,
+)
 def list_jobs_cmd(status: str | None) -> None:
     """List recent jobs."""
     from suplex.jobs import list_jobs
@@ -801,7 +941,12 @@ def list_jobs_cmd(status: str | None) -> None:
         return
     for j in jobs:
         pct = f"{j['completed']}/{j['total']}" if j["total"] > 0 else "—"
-        click.echo(f"  {j['id']}  {j['status']:8s}  {j['type']:8s}  {pct:>12s}  leads={j['leads_count']}  {j.get('started_at', '')[:19]}")
+        pid = j.get("meta", {}).get("runtime", {}).get("pid")
+        pid_text = f"  pid={pid}" if pid else ""
+        click.echo(
+            f"  {j['id']}  {j['status']:16s}  {j['type']:8s}  "
+            f"{pct:>12s}  leads={j['leads_count']}{pid_text}  {j.get('started_at', '')[:19]}"
+        )
 
 
 @cli.command("job")
@@ -823,6 +968,17 @@ def resume_cmd(job_id: str, scraper: str | None) -> None:
     """
     from suplex.jobs import resume_job
     result = resume_job(job_id, scraper_override=scraper)
+    click.echo(json.dumps(result, indent=2))
+
+
+@cli.command("stop")
+@click.argument("job_id")
+@click.option("--force", is_flag=True, default=False, help="Use SIGKILL instead of SIGTERM.")
+def stop_cmd(job_id: str, force: bool) -> None:
+    """Stop a running or pending background job or batch."""
+    from suplex.jobs import stop_job
+
+    result = stop_job(job_id, force=force)
     click.echo(json.dumps(result, indent=2))
 
 
@@ -1069,4 +1225,3 @@ def outreach_status(campaign_id: str) -> None:
     store = LeadStore()
     stats = store.get_outreach_stats(campaign_id)
     click.echo(json.dumps(stats, indent=2))
-

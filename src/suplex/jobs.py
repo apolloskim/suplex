@@ -9,9 +9,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import signal
 import shutil
 import subprocess
 import sys
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -21,6 +23,7 @@ from suplex.store.db import LeadStore
 logger = logging.getLogger(__name__)
 
 LOG_DIR = Path.home() / ".config" / "suplex" / "logs"
+TERMINAL_JOB_STATUSES = {"done", "failed", "done_with_errors", "stopped"}
 
 
 def launch_scrape_job(
@@ -79,6 +82,227 @@ def launch_enrich_job(
     })
 
 
+def launch_reddit_watch_job(
+    subreddit: str,
+    *,
+    sort: str = "new",
+    time_window: str = "month",
+    query: str = "",
+    policy: str = "balanced",
+    hydrate_mode: str | None = None,
+    min_age_minutes: int | None = None,
+    hydrate_min_score: int | None = None,
+    hydrate_min_comments: int | None = None,
+    revisit_after_minutes: str | None = None,
+    interval_seconds: int = 30,
+    limit: int = 25,
+    browser_executable: str | None = None,
+    headful: bool = False,
+    job_id: str | None = None,
+) -> dict:
+    """Launch a Reddit live-feed watcher in the background."""
+    job_id = job_id or _gen_id()
+    log_path = _log_path(job_id)
+    state_path = _state_path(job_id)
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "suplex.reddit_watch",
+        "--mode",
+        "watch",
+        "--subreddit",
+        subreddit,
+        "--sort",
+        sort,
+        "--time",
+        time_window,
+        "--policy",
+        policy,
+        "--interval-seconds",
+        str(interval_seconds),
+        "--limit",
+        str(limit),
+        "--state-file",
+        str(state_path),
+    ]
+    if query:
+        cmd.extend(["--query", query])
+    if hydrate_mode:
+        cmd.extend(["--hydrate-mode", hydrate_mode])
+    if min_age_minutes is not None:
+        cmd.extend(["--min-age-minutes", str(min_age_minutes)])
+    if hydrate_min_score is not None:
+        cmd.extend(["--hydrate-min-score", str(hydrate_min_score)])
+    if hydrate_min_comments is not None:
+        cmd.extend(["--hydrate-min-comments", str(hydrate_min_comments)])
+    if revisit_after_minutes:
+        cmd.extend(["--revisit-after-minutes", revisit_after_minutes])
+    if browser_executable:
+        cmd.extend(["--browser-executable", browser_executable])
+    if headful:
+        cmd.append("--headful")
+
+    meta = {
+        "type": "reddit_watch",
+        "subreddit": subreddit,
+        "sort": sort,
+        "time": time_window,
+        "query": query,
+        "policy": policy,
+        "interval_seconds": interval_seconds,
+        "limit": limit,
+        "state_file": str(state_path),
+    }
+    if hydrate_mode:
+        meta["hydrate_mode"] = hydrate_mode
+    if min_age_minutes is not None:
+        meta["min_age_minutes"] = min_age_minutes
+    if hydrate_min_score is not None:
+        meta["hydrate_min_score"] = hydrate_min_score
+    if hydrate_min_comments is not None:
+        meta["hydrate_min_comments"] = hydrate_min_comments
+    if revisit_after_minutes:
+        meta["revisit_after_minutes"] = revisit_after_minutes
+    if browser_executable:
+        meta["browser_executable"] = browser_executable
+    if headful:
+        meta["headful"] = True
+
+    store = LeadStore()
+    store.create_job(job_id, "reddit_watch", total=0, meta=meta)
+
+    env = {**os.environ, "SUPLEX_JOB_ID": job_id}
+    return _launch(job_id, cmd, env, log_path, meta=meta)
+
+
+def launch_reddit_revisit_job(
+    *,
+    subreddit: str | None = None,
+    policy: str | None = None,
+    hydrate_mode: str | None = None,
+    min_age_minutes: int | None = None,
+    hydrate_min_score: int | None = None,
+    hydrate_min_comments: int | None = None,
+    revisit_after_minutes: str | None = None,
+    limit: int = 25,
+    browser_executable: str | None = None,
+    headful: bool = False,
+    job_id: str | None = None,
+) -> dict:
+    job_id = job_id or _gen_id()
+    log_path = _log_path(job_id)
+    cmd = [
+        sys.executable,
+        "-m",
+        "suplex.reddit_watch",
+        "--mode",
+        "revisit",
+        "--limit",
+        str(limit),
+    ]
+    meta: dict[str, object] = {
+        "type": "reddit_revisit",
+        "limit": limit,
+    }
+    if policy:
+        cmd.extend(["--policy", policy])
+        meta["policy"] = policy
+    if subreddit:
+        cmd.extend(["--subreddit", subreddit])
+        meta["subreddit"] = subreddit
+    if hydrate_mode:
+        cmd.extend(["--hydrate-mode", hydrate_mode])
+        meta["hydrate_mode"] = hydrate_mode
+    if min_age_minutes is not None:
+        cmd.extend(["--min-age-minutes", str(min_age_minutes)])
+        meta["min_age_minutes"] = min_age_minutes
+    if hydrate_min_score is not None:
+        cmd.extend(["--hydrate-min-score", str(hydrate_min_score)])
+        meta["hydrate_min_score"] = hydrate_min_score
+    if hydrate_min_comments is not None:
+        cmd.extend(["--hydrate-min-comments", str(hydrate_min_comments)])
+        meta["hydrate_min_comments"] = hydrate_min_comments
+    if revisit_after_minutes:
+        cmd.extend(["--revisit-after-minutes", revisit_after_minutes])
+        meta["revisit_after_minutes"] = revisit_after_minutes
+    if browser_executable:
+        cmd.extend(["--browser-executable", browser_executable])
+        meta["browser_executable"] = browser_executable
+    if headful:
+        cmd.append("--headful")
+        meta["headful"] = True
+
+    store = LeadStore()
+    store.create_job(job_id, "reddit_revisit", total=0, meta=meta)
+    env = {**os.environ, "SUPLEX_JOB_ID": job_id}
+    return _launch(job_id, cmd, env, log_path, meta=meta)
+
+
+def launch_reddit_hydrate_job(
+    *,
+    subreddit: str | None = None,
+    post_ids: list[str] | None = None,
+    limit: int = 25,
+    comments_limit: int = 25,
+    comment_sort: str = "best",
+    expand_replies: bool = False,
+    reply_pages_limit: int = 20,
+    browser_executable: str | None = None,
+    headful: bool = False,
+    debug: bool = False,
+    job_id: str | None = None,
+) -> dict:
+    job_id = job_id or _gen_id()
+    log_path = _log_path(job_id)
+    cmd = [
+        sys.executable,
+        "-m",
+        "suplex.reddit_watch",
+        "--mode",
+        "hydrate",
+        "--limit",
+        str(limit),
+        "--comments-limit",
+        str(comments_limit),
+        "--comment-sort",
+        comment_sort,
+        "--reply-pages-limit",
+        str(reply_pages_limit),
+    ]
+    meta: dict[str, object] = {
+        "type": "reddit_hydrate",
+        "limit": limit,
+        "comments_limit": comments_limit,
+        "comment_sort": comment_sort,
+        "reply_pages_limit": reply_pages_limit,
+    }
+    if subreddit:
+        cmd.extend(["--subreddit", subreddit])
+        meta["subreddit"] = subreddit
+    for post_id in post_ids or []:
+        cmd.extend(["--post-id", post_id])
+    if post_ids:
+        meta["post_ids"] = post_ids
+    if expand_replies:
+        cmd.append("--expand-replies")
+        meta["expand_replies"] = True
+    if browser_executable:
+        cmd.extend(["--browser-executable", browser_executable])
+        meta["browser_executable"] = browser_executable
+    if headful:
+        cmd.append("--headful")
+        meta["headful"] = True
+    if debug:
+        cmd.append("--debug")
+        meta["debug"] = True
+
+    store = LeadStore()
+    store.create_job(job_id, "reddit_hydrate", total=0, meta=meta)
+    env = {**os.environ, "SUPLEX_JOB_ID": job_id}
+    return _launch(job_id, cmd, env, log_path, meta=meta)
+
+
 def launch_batch_job(specs: list[dict], *, max_parallel: int = 3) -> dict:
     """Launch a batch of scrape/enrich jobs with concurrency control.
 
@@ -124,6 +348,9 @@ def advance_batch(batch_id: str, max_parallel: int = 3) -> dict:
     if not status:
         return {"error": f"Batch {batch_id} not found"}
 
+    if status["status"] == "stopped":
+        return {**status, "newly_launched": 0}
+
     running = status["running"]
     slots = max(0, max_parallel - running)
     newly_launched = []
@@ -136,8 +363,10 @@ def advance_batch(batch_id: str, max_parallel: int = 3) -> dict:
             newly_launched.append(child["id"])
 
     # Check if batch is complete.
-    if status["done"] + status["failed"] == status["total_jobs"]:
-        store.finish_job(batch_id, "done" if status["failed"] == 0 else "done_with_errors")
+    terminal = status["done"] + status["failed"] + status.get("stopped", 0)
+    if terminal == status["total_jobs"]:
+        final_status = _final_batch_status(status)
+        store.finish_job(batch_id, final_status)
 
     return {**status, "newly_launched": len(newly_launched)}
 
@@ -209,6 +438,52 @@ def _launch_child_job(child: dict) -> None:
         launch_enrich_job(
             limit=meta.get("limit", 100),
             linkedin_posts=meta.get("linkedin_posts", 1),
+            job_id=job_id,
+        )
+    elif job_type == "reddit_watch":
+        launch_reddit_watch_job(
+            meta.get("subreddit", ""),
+            sort=meta.get("sort", "new"),
+            time_window=meta.get("time", "month"),
+            query=meta.get("query", ""),
+            policy=meta.get("policy", "balanced"),
+            hydrate_mode=meta.get("hydrate_mode"),
+            min_age_minutes=meta.get("min_age_minutes"),
+            hydrate_min_score=meta.get("hydrate_min_score"),
+            hydrate_min_comments=meta.get("hydrate_min_comments"),
+            revisit_after_minutes=meta.get("revisit_after_minutes"),
+            interval_seconds=int(meta.get("interval_seconds", 30)),
+            limit=int(meta.get("limit", 25)),
+            browser_executable=meta.get("browser_executable"),
+            headful=bool(meta.get("headful", False)),
+            job_id=job_id,
+        )
+    elif job_type == "reddit_revisit":
+        launch_reddit_revisit_job(
+            subreddit=meta.get("subreddit"),
+            policy=meta.get("policy"),
+            hydrate_mode=meta.get("hydrate_mode"),
+            min_age_minutes=meta.get("min_age_minutes"),
+            hydrate_min_score=meta.get("hydrate_min_score"),
+            hydrate_min_comments=meta.get("hydrate_min_comments"),
+            revisit_after_minutes=meta.get("revisit_after_minutes"),
+            limit=int(meta.get("limit", 25)),
+            browser_executable=meta.get("browser_executable"),
+            headful=bool(meta.get("headful", False)),
+            job_id=job_id,
+        )
+    elif job_type == "reddit_hydrate":
+        launch_reddit_hydrate_job(
+            subreddit=meta.get("subreddit"),
+            post_ids=list(meta.get("post_ids", []) or []),
+            limit=int(meta.get("limit", 25)),
+            comments_limit=int(meta.get("comments_limit", 25)),
+            comment_sort=meta.get("comment_sort", "best"),
+            expand_replies=bool(meta.get("expand_replies", False)),
+            reply_pages_limit=int(meta.get("reply_pages_limit", 20)),
+            browser_executable=meta.get("browser_executable"),
+            headful=bool(meta.get("headful", False)),
+            debug=bool(meta.get("debug", False)),
             job_id=job_id,
         )
 
@@ -296,6 +571,52 @@ def resume_job(job_id: str, scraper_override: str | None = None) -> dict:
             linkedin_posts=meta.get("linkedin_posts", 1),
             job_id=job_id,
         )
+    elif job_type == "reddit_watch":
+        launch_reddit_watch_job(
+            meta.get("subreddit", ""),
+            sort=meta.get("sort", "new"),
+            time_window=meta.get("time", "month"),
+            query=meta.get("query", ""),
+            policy=meta.get("policy", "balanced"),
+            hydrate_mode=meta.get("hydrate_mode"),
+            min_age_minutes=meta.get("min_age_minutes"),
+            hydrate_min_score=meta.get("hydrate_min_score"),
+            hydrate_min_comments=meta.get("hydrate_min_comments"),
+            revisit_after_minutes=meta.get("revisit_after_minutes"),
+            interval_seconds=int(meta.get("interval_seconds", 30)),
+            limit=int(meta.get("limit", 25)),
+            browser_executable=meta.get("browser_executable"),
+            headful=bool(meta.get("headful", False)),
+            job_id=job_id,
+        )
+    elif job_type == "reddit_revisit":
+        launch_reddit_revisit_job(
+            subreddit=meta.get("subreddit"),
+            policy=meta.get("policy"),
+            hydrate_mode=meta.get("hydrate_mode"),
+            min_age_minutes=meta.get("min_age_minutes"),
+            hydrate_min_score=meta.get("hydrate_min_score"),
+            hydrate_min_comments=meta.get("hydrate_min_comments"),
+            revisit_after_minutes=meta.get("revisit_after_minutes"),
+            limit=int(meta.get("limit", 25)),
+            browser_executable=meta.get("browser_executable"),
+            headful=bool(meta.get("headful", False)),
+            job_id=job_id,
+        )
+    elif job_type == "reddit_hydrate":
+        launch_reddit_hydrate_job(
+            subreddit=meta.get("subreddit"),
+            post_ids=list(meta.get("post_ids", []) or []),
+            limit=int(meta.get("limit", 25)),
+            comments_limit=int(meta.get("comments_limit", 25)),
+            comment_sort=meta.get("comment_sort", "best"),
+            expand_replies=bool(meta.get("expand_replies", False)),
+            reply_pages_limit=int(meta.get("reply_pages_limit", 20)),
+            browser_executable=meta.get("browser_executable"),
+            headful=bool(meta.get("headful", False)),
+            debug=bool(meta.get("debug", False)),
+            job_id=job_id,
+        )
     else:
         return {"error": f"Cannot resume job type: {job_type}"}
 
@@ -332,6 +653,16 @@ def get_job_status(job_id: str) -> dict:
     if job["error"]:
         result["error"] = job["error"]
 
+    runtime = job["meta"].get("runtime", {})
+    if runtime.get("pid") is not None:
+        result["pid"] = runtime["pid"]
+    if runtime.get("pgid") is not None:
+        result["pgid"] = runtime["pgid"]
+    if runtime.get("log"):
+        result["log"] = runtime["log"]
+    if job["meta"].get("watchdog", {}).get("pid") is not None:
+        result["watchdog_pid"] = job["meta"]["watchdog"]["pid"]
+
     result["meta"] = job["meta"]
     return result
 
@@ -342,6 +673,23 @@ def list_jobs(status: str | None = None) -> list[dict]:
     return store.list_jobs(status=status)
 
 
+def stop_job(job_id: str, *, force: bool = False, store: LeadStore | None = None) -> dict:
+    """Stop a running or pending background job.
+
+    For batch jobs, this also stops the watchdog and any running children, and marks pending
+    children as stopped so the batch cannot relaunch work behind the user's back.
+    """
+    store = store or LeadStore()
+    job = store.get_job(job_id)
+    if not job:
+        return {"error": f"Job {job_id} not found"}
+
+    if job["type"] == "batch":
+        return _stop_batch_job(store, job, force=force)
+
+    return _stop_single_job(store, job, force=force, reason="stopped_by_user")
+
+
 def _spawn_watchdog(batch_id: str, max_parallel: int) -> None:
     """Spawn a detached watchdog process that auto-advances the batch."""
     cmd = [
@@ -350,12 +698,17 @@ def _spawn_watchdog(batch_id: str, max_parallel: int) -> None:
     ]
     log_path = _log_path(f"{batch_id}_watchdog")
     log_file = open(log_path, "w")
-    subprocess.Popen(
+    proc = subprocess.Popen(
         cmd,
         stdout=log_file,
         stderr=subprocess.STDOUT,
         start_new_session=True,
     )
+    store = LeadStore()
+    batch = store.get_job(batch_id)
+    meta = batch["meta"] if batch else {}
+    meta["watchdog"] = _runtime_meta_from_process(proc, log_path)
+    _update_job_meta(store, batch_id, meta)
 
 
 def _watchdog_loop(batch_id: str, max_parallel: int, poll_interval: int = 15) -> None:
@@ -372,14 +725,21 @@ def _watchdog_loop(batch_id: str, max_parallel: int, poll_interval: int = 15) ->
         if not status:
             break
 
-        done = status["done"] + status["failed"]
+        if status["status"] == "stopped":
+            print(f"Batch {batch_id} stopped")
+            break
+
+        terminal = status["done"] + status["failed"] + status.get("stopped", 0)
         total = status["total_jobs"]
 
         # Batch complete?
-        if done >= total:
-            final_status = "done" if status["failed"] == 0 else "done_with_errors"
+        if terminal >= total:
+            final_status = _final_batch_status(status)
             store.finish_job(batch_id, final_status)
-            print(f"Batch {batch_id} complete: {final_status} ({status['done']} done, {status['failed']} failed)")
+            print(
+                f"Batch {batch_id} complete: {final_status} "
+                f"({status['done']} done, {status['failed']} failed, {status.get('stopped', 0)} stopped)"
+            )
             break
 
         # Launch next jobs if slots open.
@@ -398,8 +758,209 @@ def _watchdog_loop(batch_id: str, max_parallel: int, poll_interval: int = 15) ->
 
 def _update_job_meta(store: LeadStore, job_id: str, meta: dict) -> None:
     """Persist updated meta to the job row (e.g., after scraper override on resume)."""
-    with store._conn() as conn:
-        conn.execute("UPDATE jobs SET meta = ? WHERE id = ?", (json.dumps(meta), job_id))
+    store.update_job_meta(job_id, meta)
+
+
+def _final_batch_status(status: dict) -> str:
+    if status.get("stopped", 0) > 0:
+        return "stopped"
+    if status["failed"] > 0:
+        return "done_with_errors"
+    return "done"
+
+
+def _runtime_meta_from_process(proc: subprocess.Popen, log_path: Path) -> dict:
+    runtime = {
+        "pid": proc.pid,
+        "log": str(log_path),
+    }
+    try:
+        runtime["pgid"] = os.getpgid(proc.pid)
+    except ProcessLookupError:
+        runtime["pgid"] = proc.pid
+    return runtime
+
+
+def _normalize_runtime_value(value: object) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _terminate_runtime(runtime: dict | None, *, force: bool = False) -> dict:
+    runtime = runtime or {}
+    pid = _normalize_runtime_value(runtime.get("pid"))
+    pgid = _normalize_runtime_value(runtime.get("pgid")) or pid
+    signal_name = "SIGKILL" if force else "SIGTERM"
+
+    if pid is None and pgid is None:
+        return {
+            "pid": None,
+            "pgid": None,
+            "signal": signal_name,
+            "process_found": False,
+            "signal_sent": False,
+            "escalated_to_sigkill": False,
+        }
+
+    process_found = _pid_exists(pid)
+    signal_sent = False
+    escalated = False
+
+    if process_found:
+        _send_signal(pid=pid, pgid=pgid, sig=signal.SIGKILL if force else signal.SIGTERM)
+        signal_sent = True
+        if not force and pid is not None and not _wait_for_exit(pid, timeout_seconds=5.0):
+            _send_signal(pid=pid, pgid=pgid, sig=signal.SIGKILL)
+            escalated = True
+
+    return {
+        "pid": pid,
+        "pgid": pgid,
+        "signal": signal_name,
+        "process_found": process_found,
+        "signal_sent": signal_sent,
+        "escalated_to_sigkill": escalated,
+        "log": runtime.get("log"),
+    }
+
+
+def _send_signal(*, pid: int | None, pgid: int | None, sig: int) -> None:
+    if pgid is not None and hasattr(os, "killpg"):
+        try:
+            os.killpg(pgid, sig)
+            return
+        except ProcessLookupError:
+            return
+    if pid is not None:
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            return
+
+
+def _pid_exists(pid: int | None) -> bool:
+    if pid is None:
+        return False
+    try:
+        import psutil
+    except ImportError:
+        psutil = None
+
+    if psutil is not None:
+        return psutil.pid_exists(pid)
+
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _wait_for_exit(pid: int, *, timeout_seconds: float) -> bool:
+    try:
+        import psutil
+    except ImportError:
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            if not _pid_exists(pid):
+                return True
+            time.sleep(0.1)
+        return not _pid_exists(pid)
+
+    try:
+        proc = psutil.Process(pid)
+        proc.wait(timeout=timeout_seconds)
+        return True
+    except psutil.NoSuchProcess:
+        return True
+    except psutil.TimeoutExpired:
+        return False
+
+
+def _stop_single_job(
+    store: LeadStore,
+    job: dict,
+    *,
+    force: bool,
+    reason: str,
+) -> dict:
+    job_id = job["id"]
+    if job["status"] in TERMINAL_JOB_STATUSES:
+        return {
+            "job_id": job_id,
+            "status": job["status"],
+            "already_terminal": True,
+        }
+
+    runtime_result = _terminate_runtime(job.get("meta", {}).get("runtime"), force=force)
+    reset = store.reset_processing_tasks(job_id)
+    store.finish_job(job_id, "stopped", error=reason)
+
+    result = {
+        "job_id": job_id,
+        "status": "stopped",
+        "type": job["type"],
+        "tasks_reset": reset,
+        **runtime_result,
+    }
+    if job.get("parent_id"):
+        result["parent_id"] = job["parent_id"]
+    return result
+
+
+def _stop_batch_job(store: LeadStore, job: dict, *, force: bool) -> dict:
+    batch_id = job["id"]
+    if job["status"] in TERMINAL_JOB_STATUSES:
+        return {
+            "job_id": batch_id,
+            "status": job["status"],
+            "type": "batch",
+            "already_terminal": True,
+        }
+
+    status = store.get_batch_status(batch_id)
+    if not status:
+        return {"error": f"Batch {batch_id} not found"}
+
+    watchdog_result = _terminate_runtime(job.get("meta", {}).get("watchdog"), force=force)
+    stopped_children: list[dict] = []
+    pending_children_stopped: list[str] = []
+
+    for child in status["children"]:
+        if child["status"] == "running":
+            stopped_children.append(
+                _stop_single_job(store, child, force=force, reason="stopped_by_batch"),
+            )
+        elif child["status"] == "pending":
+            store.finish_job(child["id"], "stopped", error="stopped_by_batch")
+            pending_children_stopped.append(child["id"])
+
+    store.finish_job(batch_id, "stopped", error="stopped_by_user")
+
+    refreshed = store.get_batch_status(batch_id) or status
+    return {
+        "job_id": batch_id,
+        "status": "stopped",
+        "type": "batch",
+        "watchdog": watchdog_result,
+        "running_children_stopped": len(stopped_children),
+        "pending_children_stopped": len(pending_children_stopped),
+        "stopped_children": stopped_children,
+        "pending_child_ids": pending_children_stopped,
+        "summary": {
+            "done": refreshed["done"],
+            "failed": refreshed["failed"],
+            "stopped": refreshed.get("stopped", 0),
+            "pending": refreshed["pending"],
+            "running": refreshed["running"],
+        },
+    }
 
 
 def _suplex_bin() -> str:
@@ -421,6 +982,11 @@ def _log_path(job_id: str) -> Path:
     return LOG_DIR / f"{job_id}.log"
 
 
+def _state_path(job_id: str) -> Path:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    return LOG_DIR / f"{job_id}.state.json"
+
+
 def _launch(job_id: str, cmd: list[str], env: dict, log_path: Path, meta: dict) -> dict:
     """Spawn a detached subprocess."""
     log_file = open(log_path, "w")
@@ -433,12 +999,20 @@ def _launch(job_id: str, cmd: list[str], env: dict, log_path: Path, meta: dict) 
         env=env,
     )
 
+    runtime = _runtime_meta_from_process(proc, log_path)
+    store = LeadStore()
+    job = store.get_job(job_id)
+    job_meta = dict(job["meta"]) if job else dict(meta)
+    job_meta["runtime"] = runtime
+    _update_job_meta(store, job_id, job_meta)
+
     logger.info("Launched job %s (pid=%d): %s", job_id, proc.pid, " ".join(cmd))
 
     return {
         "job_id": job_id,
-        "pid": proc.pid,
-        "log": str(log_path),
+        "pid": runtime["pid"],
+        "pgid": runtime.get("pgid"),
+        "log": runtime["log"],
         "status": "launched",
         **meta,
     }

@@ -164,6 +164,51 @@ CREATE TABLE IF NOT EXISTS suppression_list (
     source TEXT,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS reddit_posts (
+    post_id TEXT PRIMARY KEY,
+    subreddit TEXT NOT NULL,
+    url TEXT NOT NULL,
+    title TEXT,
+    author TEXT,
+    created_timestamp TEXT,
+    selftext TEXT NOT NULL DEFAULT '',
+    domain TEXT,
+    flair TEXT,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    matched_query TEXT NOT NULL DEFAULT '',
+    matched INTEGER NOT NULL DEFAULT 0,
+    last_sort TEXT NOT NULL DEFAULT 'new',
+    last_time_window TEXT NOT NULL DEFAULT 'month',
+    last_score INTEGER NOT NULL DEFAULT 0,
+    last_num_comments INTEGER NOT NULL DEFAULT 0,
+    signal_status TEXT NOT NULL DEFAULT 'seen',
+    hydration_status TEXT NOT NULL DEFAULT 'pending',
+    next_revisit_at TEXT,
+    revisit_count INTEGER NOT NULL DEFAULT 0,
+    last_hydrated_at TEXT,
+    last_hydration_error TEXT,
+    policy_json TEXT NOT NULL DEFAULT '{}',
+    post_payload_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_reddit_posts_subreddit ON reddit_posts(subreddit, last_seen_at DESC);
+CREATE INDEX IF NOT EXISTS idx_reddit_posts_revisit ON reddit_posts(next_revisit_at, signal_status);
+CREATE INDEX IF NOT EXISTS idx_reddit_posts_hydration ON reddit_posts(hydration_status, last_seen_at DESC);
+
+CREATE TABLE IF NOT EXISTS reddit_post_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    post_id TEXT NOT NULL REFERENCES reddit_posts(post_id),
+    seen_at TEXT NOT NULL,
+    sort TEXT NOT NULL DEFAULT 'new',
+    time_window TEXT NOT NULL DEFAULT 'month',
+    score INTEGER NOT NULL DEFAULT 0,
+    num_comments INTEGER NOT NULL DEFAULT 0,
+    snapshot_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_reddit_snapshots_post_seen ON reddit_post_snapshots(post_id, seen_at DESC);
 """
 
 
@@ -568,6 +613,13 @@ class LeadStore:
                 (status, datetime.utcnow().isoformat(), error, job_id),
             )
 
+    def update_job_meta(self, job_id: str, meta: dict) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE jobs SET meta = ? WHERE id = ?",
+                (json.dumps(meta), job_id),
+            )
+
     def get_job(self, job_id: str) -> dict | None:
         with self._conn() as conn:
             row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
@@ -633,6 +685,7 @@ class LeadStore:
             "running": sum(1 for c in children if c["status"] == "running"),
             "failed": sum(1 for c in children if c["status"] == "failed"),
             "pending": sum(1 for c in children if c["status"] == "pending"),
+            "stopped": sum(1 for c in children if c["status"] == "stopped"),
             "total_leads": sum(c["leads_count"] for c in children),
             "children": child_list,
         }
@@ -708,6 +761,17 @@ class LeadStore:
             )
             return cur.rowcount
 
+    def reset_processing_tasks(self, job_id: str) -> int:
+        """Reset in-flight items immediately after a manual stop."""
+        with self._conn() as conn:
+            cur = conn.execute(
+                """UPDATE item_tasks
+                   SET status = 'pending', started_at = NULL
+                   WHERE job_id = ? AND status = 'processing'""",
+                (job_id,),
+            )
+            return cur.rowcount
+
     def get_item_task_counts(self, job_id: str) -> dict[str, int]:
         with self._conn() as conn:
             rows = conn.execute(
@@ -723,6 +787,303 @@ class LeadStore:
                 (job_id, item_key),
             ).fetchone()
             return row is not None and row["status"] == "done"
+
+    # ------------------------------------------------------------------
+    # Reddit post watching / revisit / hydration
+    # ------------------------------------------------------------------
+
+    def upsert_reddit_post(
+        self,
+        post: dict[str, object],
+        *,
+        seen_at: str,
+        query: str,
+        sort: str,
+        time_window: str,
+        matched: bool,
+        policy: dict[str, object],
+    ) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO reddit_posts (
+                    post_id, subreddit, url, title, author, created_timestamp,
+                    selftext, domain, flair, first_seen_at, last_seen_at,
+                    matched_query, matched, last_sort, last_time_window,
+                    last_score, last_num_comments, policy_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(post_id) DO UPDATE SET
+                    subreddit = excluded.subreddit,
+                    url = excluded.url,
+                    title = CASE
+                        WHEN excluded.title IS NOT NULL AND excluded.title != '' THEN excluded.title
+                        ELSE reddit_posts.title
+                    END,
+                    author = COALESCE(excluded.author, reddit_posts.author),
+                    created_timestamp = COALESCE(excluded.created_timestamp, reddit_posts.created_timestamp),
+                    selftext = CASE
+                        WHEN excluded.selftext IS NOT NULL AND excluded.selftext != '' THEN excluded.selftext
+                        ELSE reddit_posts.selftext
+                    END,
+                    domain = COALESCE(excluded.domain, reddit_posts.domain),
+                    flair = COALESCE(excluded.flair, reddit_posts.flair),
+                    last_seen_at = excluded.last_seen_at,
+                    matched_query = CASE
+                        WHEN excluded.matched = 1 THEN excluded.matched_query
+                        ELSE reddit_posts.matched_query
+                    END,
+                    matched = CASE
+                        WHEN excluded.matched > reddit_posts.matched THEN excluded.matched
+                        ELSE reddit_posts.matched
+                    END,
+                    last_sort = excluded.last_sort,
+                    last_time_window = excluded.last_time_window,
+                    last_score = excluded.last_score,
+                    last_num_comments = excluded.last_num_comments,
+                    policy_json = CASE
+                        WHEN excluded.policy_json != '{}' THEN excluded.policy_json
+                        ELSE reddit_posts.policy_json
+                    END
+                """,
+                (
+                    post.get("id"),
+                    post.get("subreddit"),
+                    post.get("url"),
+                    post.get("title"),
+                    post.get("author"),
+                    post.get("created_timestamp"),
+                    post.get("selftext") or "",
+                    post.get("domain"),
+                    post.get("link_flair_text"),
+                    seen_at,
+                    seen_at,
+                    query,
+                    1 if matched else 0,
+                    sort,
+                    time_window,
+                    int(post.get("score") or 0),
+                    int(post.get("num_comments") or 0),
+                    json.dumps(policy),
+                ),
+            )
+
+    def insert_reddit_post_snapshot(
+        self,
+        post_id: str,
+        *,
+        seen_at: str,
+        sort: str,
+        time_window: str,
+        score: int,
+        num_comments: int,
+        snapshot: dict[str, object],
+    ) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO reddit_post_snapshots (
+                    post_id, seen_at, sort, time_window, score, num_comments, snapshot_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    post_id,
+                    seen_at,
+                    sort,
+                    time_window,
+                    score,
+                    num_comments,
+                    json.dumps(snapshot),
+                ),
+            )
+
+    def get_reddit_post(self, post_id: str) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM reddit_posts WHERE post_id = ?",
+                (post_id,),
+            ).fetchone()
+            if row:
+                return self._row_to_reddit_post(row)
+        return None
+
+    def list_reddit_posts(
+        self,
+        *,
+        subreddit: str | None = None,
+        signal_status: str | None = None,
+        hydration_status: str | None = None,
+        limit: int = 20,
+    ) -> list[dict]:
+        query = "SELECT * FROM reddit_posts"
+        clauses: list[str] = []
+        params: list[object] = []
+        if subreddit:
+            clauses.append("subreddit = ?")
+            params.append(subreddit)
+        if signal_status:
+            clauses.append("signal_status = ?")
+            params.append(signal_status)
+        if hydration_status:
+            clauses.append("hydration_status = ?")
+            params.append(hydration_status)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY last_seen_at DESC LIMIT ?"
+        params.append(limit)
+        with self._conn() as conn:
+            rows = conn.execute(query, params).fetchall()
+            return [self._row_to_reddit_post(row) for row in rows]
+
+    def update_reddit_post_fields(self, post_id: str, **fields: object) -> None:
+        if not fields:
+            return
+        assignments: list[str] = []
+        params: list[object] = []
+        for key, value in fields.items():
+            if key not in {
+                "signal_status",
+                "hydration_status",
+                "next_revisit_at",
+                "revisit_count",
+                "last_hydrated_at",
+                "last_hydration_error",
+                "post_payload_json",
+                "policy_json",
+                "last_score",
+                "last_num_comments",
+                "last_seen_at",
+                "matched_query",
+                "matched",
+            }:
+                continue
+            assignments.append(f"{key} = ?")
+            if key in {"post_payload_json", "policy_json"} and isinstance(value, dict):
+                params.append(json.dumps(value))
+            else:
+                params.append(value)
+        if not assignments:
+            return
+        params.append(post_id)
+        with self._conn() as conn:
+            conn.execute(
+                f"UPDATE reddit_posts SET {', '.join(assignments)} WHERE post_id = ?",
+                params,
+            )
+
+    def schedule_reddit_post_revisit(self, post_id: str, *, next_revisit_at: str | None) -> None:
+        self.update_reddit_post_fields(
+            post_id,
+            signal_status="watching" if next_revisit_at else "seen",
+            hydration_status="pending",
+            next_revisit_at=next_revisit_at,
+        )
+
+    def record_reddit_post_revisit(
+        self,
+        post_id: str,
+        *,
+        next_revisit_at: str | None,
+        signal_status: str,
+    ) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                """
+                UPDATE reddit_posts
+                SET revisit_count = revisit_count + 1,
+                    next_revisit_at = ?,
+                    signal_status = ?,
+                    hydration_status = CASE
+                        WHEN hydration_status = 'queued' THEN hydration_status
+                        ELSE 'pending'
+                    END
+                WHERE post_id = ?
+                """,
+                (next_revisit_at, signal_status, post_id),
+            )
+
+    def queue_reddit_post_hydration(self, post_id: str) -> None:
+        self.update_reddit_post_fields(
+            post_id,
+            signal_status="queued_for_hydration",
+            hydration_status="queued",
+            next_revisit_at=None,
+        )
+
+    def mark_reddit_post_discarded(self, post_id: str) -> None:
+        self.update_reddit_post_fields(
+            post_id,
+            signal_status="discarded",
+            next_revisit_at=None,
+        )
+
+    def mark_reddit_post_hydrated(self, post_id: str, payload: dict[str, object]) -> None:
+        self.update_reddit_post_fields(
+            post_id,
+            signal_status="hydrated",
+            hydration_status="hydrated",
+            next_revisit_at=None,
+            last_hydrated_at=datetime.utcnow().isoformat(),
+            last_hydration_error=None,
+            post_payload_json=payload,
+        )
+
+    def mark_reddit_post_hydration_failed(self, post_id: str, error: str) -> None:
+        self.update_reddit_post_fields(
+            post_id,
+            hydration_status="failed",
+            last_hydration_error=error,
+        )
+
+    def get_due_reddit_revisits(
+        self,
+        *,
+        now_iso: str | None = None,
+        subreddit: str | None = None,
+        limit: int = 20,
+    ) -> list[dict]:
+        now_iso = now_iso or datetime.utcnow().isoformat()
+        query = (
+            "SELECT * FROM reddit_posts "
+            "WHERE signal_status = 'watching' AND next_revisit_at IS NOT NULL AND next_revisit_at <= ?"
+        )
+        params: list[object] = [now_iso]
+        if subreddit:
+            query += " AND subreddit = ?"
+            params.append(subreddit)
+        query += " ORDER BY next_revisit_at ASC LIMIT ?"
+        params.append(limit)
+        with self._conn() as conn:
+            rows = conn.execute(query, params).fetchall()
+            return [self._row_to_reddit_post(row) for row in rows]
+
+    def get_queued_reddit_hydrations(
+        self,
+        *,
+        subreddit: str | None = None,
+        post_ids: list[str] | None = None,
+        limit: int = 20,
+    ) -> list[dict]:
+        query = "SELECT * FROM reddit_posts WHERE hydration_status = 'queued'"
+        params: list[object] = []
+        if subreddit:
+            query += " AND subreddit = ?"
+            params.append(subreddit)
+        if post_ids:
+            placeholders = ",".join("?" for _ in post_ids)
+            query += f" AND post_id IN ({placeholders})"
+            params.extend(post_ids)
+        query += " ORDER BY last_seen_at DESC LIMIT ?"
+        params.append(limit)
+        with self._conn() as conn:
+            rows = conn.execute(query, params).fetchall()
+            return [self._row_to_reddit_post(row) for row in rows]
+
+    @staticmethod
+    def _row_to_reddit_post(row: sqlite3.Row) -> dict:
+        data = dict(row)
+        data["policy_json"] = json.loads(data["policy_json"]) if data["policy_json"] else {}
+        data["post_payload_json"] = json.loads(data["post_payload_json"]) if data["post_payload_json"] else {}
+        return data
 
     # ------------------------------------------------------------------
 
