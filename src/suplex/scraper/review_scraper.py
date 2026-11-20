@@ -1,211 +1,104 @@
 from __future__ import annotations
 
-import json
 import logging
 import re
-import secrets
 from typing import Any
 
-from playwright.async_api import BrowserContext, Page
+from playwright.async_api import Error as PlaywrightError
+from playwright.async_api import Page
 
 logger = logging.getLogger(__name__)
 
-DATA_ID_RE = re.compile(r"(0x[0-9a-fA-F]{8,}:0x[0-9a-fA-F]{8,})")
-RPC_ENDPOINT = "https://www.google.com/maps/preview/review/listentitiesreviews"
+REVIEW_CARD = "div[data-review-id][aria-label]"
+REVIEWS_TAB = re.compile(r"^Reviews", re.IGNORECASE)
+STARS_RE = re.compile(r"(\d)")
+MAX_TEXT_LENGTH = 500
+MAX_SCROLLS = 10
+
+EXPAND_TRUNCATED_JS = """(limit) => {
+    const cards = [...document.querySelectorAll('div[data-review-id][aria-label]')].slice(0, limit);
+    for (const card of cards) {
+        for (const button of card.querySelectorAll('button[aria-label="See more"]')) button.click();
+    }
+}"""
+
+EXTRACT_REVIEWS_JS = """(limit) => {
+    const seen = new Set();
+    const reviews = [];
+    for (const card of document.querySelectorAll('div[data-review-id][aria-label]')) {
+        const id = card.getAttribute('data-review-id');
+        if (seen.has(id)) continue;
+        seen.add(id);
+        const stars = card.querySelector('[role="img"][aria-label*="star"]');
+        const holder = card.querySelector('[data-irrelevant-review-text-id]');
+        const body = holder ? document.getElementById(holder.getAttribute('data-irrelevant-review-text-id')) : null;
+        reviews.push({
+            author: card.getAttribute('aria-label') || '',
+            stars: stars ? stars.getAttribute('aria-label') : '',
+            date: stars && stars.nextElementSibling ? stars.nextElementSibling.textContent : '',
+            text: body ? body.innerText : '',
+        });
+        if (reviews.length >= limit) break;
+    }
+    return reviews;
+}"""
+
+SCROLL_REVIEWS_JS = """() => {
+    const cards = document.querySelectorAll('div[data-review-id][aria-label]');
+    if (cards.length) cards[cards.length - 1].scrollIntoView();
+    return cards.length;
+}"""
+
+_markup_warning_logged = False
 
 
-def _parse_data_ids(url: str) -> tuple[int, int] | None:
-    match = DATA_ID_RE.search(url)
-    if not match:
-        return None
-    parts = match.group(1).split(":")
-    fid_dec = int(parts[0].replace("0x", ""), 16)
-    cid_dec = int(parts[1].replace("0x", ""), 16)
-    return fid_dec, cid_dec
-
-
-def _build_pb(fid_dec: int, cid_dec: int, offset: int = 0, limit: int = 10, sort: int = 1) -> str:
-    token = secrets.token_urlsafe(12)
-    return (
-        f"!1m2!1y{fid_dec}!2y{cid_dec}"
-        f"!2m2!1i{offset}!2i{limit}"
-        f"!3e{sort}"
-        f"!4m5!3b1!4b1!5b1!6b1!7b1"
-        f"!5m2!1s{token}!7e81"
-    )
-
-
-def _parse_rpc_response(body: str) -> tuple[list[dict], int | None]:
-    if body.startswith(")]}'"):
-        body = body[4:].strip()
+async def scrape_reviews(page: Page, *, max_reviews: int, expected_count: int | None = None) -> list[dict[str, Any]]:
+    if max_reviews <= 0:
+        return []
 
     try:
-        payload = json.loads(body)
-    except json.JSONDecodeError:
-        return [], None
+        await page.get_by_role("tab", name=REVIEWS_TAB).first.click(timeout=5000)
+        await page.wait_for_selector(REVIEW_CARD, timeout=8000)
+    except PlaywrightError:
+        _warn_if_reviews_expected(expected_count, "the Reviews tab did not open")
+        return []
 
-    total = None
-    try:
-        if isinstance(payload, list) and len(payload) > 5:
-            section = payload[5]
-            if isinstance(section, list) and len(section) > 4:
-                val = section[4]
-                if isinstance(val, (int, float)) and val >= 0:
-                    total = int(val)
-    except (IndexError, TypeError):
-        pass
-
-    raw_reviews = payload[2] if isinstance(payload, list) and len(payload) > 2 else None
-    if not isinstance(raw_reviews, list):
-        return [], total
-
-    reviews = []
-    for row in raw_reviews:
-        if not isinstance(row, list) or len(row) < 5:
-            continue
-
-        author = ""
-        if isinstance(row[0], list) and len(row[0]) > 1:
-            author = str(row[0][1] or "").strip()
-
-        date = str(row[1] or "").strip()
-        text = str(row[3] or "").strip()
-
-        stars = None
-        if isinstance(row[4], (int, float)) and 1 <= row[4] <= 5:
-            stars = int(row[4])
-
-        if not text and not stars:
-            continue
-
-        reviews.append({
-            "author": author,
-            "stars": stars,
-            "date": date,
-            "text": text[:500],
-        })
-
-    return reviews, total
-
-
-_endpoint_warning_logged = False
-
-
-def _warn_endpoint_unavailable(status: int) -> None:
-    global _endpoint_warning_logged
-    if _endpoint_warning_logged:
-        return
-    _endpoint_warning_logged = True
-    logger.warning(
-        "Google Maps review endpoint returned HTTP %d; reviews will be missing from this run", status,
-    )
-
-
-async def scrape_reviews(
-    context: BrowserContext,
-    page: Page,
-    *,
-    place_url: str | None = None,
-    max_reviews: int = 10,
-) -> dict[str, Any]:
-    current_url = place_url or page.url
-    ids = _parse_data_ids(current_url)
-
-    if not ids:
-        ids = await _extract_ids_from_dom(page)
-
-    if not ids:
-        logger.debug("No data IDs found for review scraping")
-        return {"reviews": [], "review_count": None, "rating": None}
-
-    fid_dec, cid_dec = ids
-
-    rating = await page.evaluate("""() => {
-        const el = document.querySelector('div.F7nice span[aria-hidden="true"]');
-        if (el) return parseFloat(el.textContent.replace(',', '.'));
-        const img = document.querySelector('span[role="img"][aria-label*="star"]');
-        if (img) {
-            const m = img.getAttribute('aria-label').match(/([0-9.]+)/);
-            if (m) return parseFloat(m[1]);
-        }
-        return null;
-    }""")
-
-    all_reviews: list[dict] = []
-    total_count = None
-    seen_texts: set[str] = set()
-
-    for sort_mode in (1, 2):
-        if len(all_reviews) >= max_reviews:
+    loaded = 0
+    for _ in range(MAX_SCROLLS):
+        count = await page.evaluate(SCROLL_REVIEWS_JS)
+        if count >= max_reviews or count == loaded:
             break
+        loaded = count
+        await page.wait_for_timeout(1200)
 
-        remaining = max_reviews - len(all_reviews)
-        limit = min(remaining, 10)
-        pb = _build_pb(fid_dec, cid_dec, offset=0, limit=limit, sort=sort_mode)
-        url = f"{RPC_ENDPOINT}?authuser=0&hl=en&gl=us&pb={pb}"
+    await page.evaluate(EXPAND_TRUNCATED_JS, max_reviews)
+    await page.wait_for_timeout(400)
+    raw_reviews = await page.evaluate(EXTRACT_REVIEWS_JS, max_reviews)
 
-        try:
-            resp = await context.request.get(url, headers={"Referer": page.url})
-            if resp.status != 200:
-                _warn_endpoint_unavailable(resp.status)
-                continue
+    reviews = [review for review in map(_normalize, raw_reviews) if review["text"] or review["stars"]]
+    if not reviews:
+        _warn_if_reviews_expected(expected_count, "no review cards could be read")
+    logger.info("Reviews: %d extracted", len(reviews))
+    return reviews
 
-            body = await resp.text()
-            reviews, count = _parse_rpc_response(body)
 
-            if count is not None:
-                total_count = count
-
-            for review in reviews:
-                key = review["text"][:80].lower()
-                if key in seen_texts:
-                    continue
-                seen_texts.add(key)
-                all_reviews.append(review)
-                if len(all_reviews) >= max_reviews:
-                    break
-
-        except Exception:
-            logger.debug("RPC API call failed for sort=%d", sort_mode, exc_info=True)
-
-    logger.info(
-        "Reviews: %d extracted (total: %s, rating: %s)",
-        len(all_reviews), total_count, rating,
-    )
-
+def _normalize(raw: dict[str, str]) -> dict[str, Any]:
+    stars_match = STARS_RE.search(raw.get("stars") or "")
+    text = (raw.get("text") or "").strip()
     return {
-        "rating": rating,
-        "review_count": total_count,
-        "reviews": all_reviews,
+        "author": (raw.get("author") or "").strip(),
+        "stars": int(stars_match.group(1)) if stars_match else None,
+        "date": (raw.get("date") or "").strip(),
+        "text": text[:MAX_TEXT_LENGTH],
     }
 
 
-async def _extract_ids_from_dom(page: Page) -> tuple[int, int] | None:
-    raw = await page.evaluate("""() => {
-        const re = /(0x[0-9a-fA-F]{8,}:0x[0-9a-fA-F]{8,})/;
-
-        const canonical = document.querySelector('link[rel="canonical"]');
-        if (canonical) {
-            const m = (canonical.getAttribute('href') || '').match(re);
-            if (m) return m[1];
-        }
-
-        for (const sel of ['meta[property="og:url"]', 'meta[itemprop="url"]', 'meta[name="twitter:url"]']) {
-            const el = document.querySelector(sel);
-            if (el) {
-                const m = (el.getAttribute('content') || '').match(re);
-                if (m) return m[1];
-            }
-        }
-
-        for (const a of document.querySelectorAll('a[href*="0x"]')) {
-            const m = (a.getAttribute('href') || '').match(re);
-            if (m) return m[1];
-        }
-
-        return null;
-    }""")
-
-    if raw:
-        return _parse_data_ids(raw)
-    return None
+def _warn_if_reviews_expected(expected_count: int | None, reason: str) -> None:
+    global _markup_warning_logged
+    if not expected_count or _markup_warning_logged:
+        return
+    _markup_warning_logged = True
+    logger.warning(
+        "Google Maps lists %d reviews for a place but %s; the page markup may have changed",
+        expected_count, reason,
+    )

@@ -9,6 +9,7 @@ from urllib.parse import quote_plus
 from playwright.async_api import Page, async_playwright
 
 from suplex.models import Lead, LeadSource, ScrapeTarget
+from suplex.scraper.review_scraper import scrape_reviews
 
 logger = logging.getLogger(__name__)
 
@@ -26,16 +27,17 @@ SEL_FEED = 'div[role="feed"]'
 SEL_PLACE_LINKS = 'a[href*="/maps/place"]'
 SEL_TITLE = "h1.DUwDvf, h1.fontHeadlineLarge"
 SEL_RATING = 'div.F7nice span[aria-hidden="true"]'
-SEL_REVIEW_COUNT = "div.F7nice"
+SEL_REVIEW_COUNT = 'div.F7nice [role="img"][aria-label*="review"]'
 SEL_CATEGORY = 'button[jsaction*="category"]'
 SEL_PHONE = 'button[data-item-id*="phone"] div.fontBodyMedium'
 SEL_ADDRESS = 'button[data-item-id="address"] div.fontBodyMedium'
 SEL_WEBSITE = 'a[data-item-id="authority"]'
 SEL_PRICE = 'span[aria-label*="Price"]'
-SEL_HOURS = '[aria-label*="hour"], [aria-label*="Hours"]'
+SEL_HOURS = 'button[aria-label$="Copy open hours"]'
 
 EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
 REVIEW_COUNT_RE = re.compile(r"([\d,]+)\s*review", re.IGNORECASE)
+HOURS_LABEL_SUFFIX = ", Copy open hours"
 
 
 class DailyLimitReached(RuntimeError):
@@ -120,7 +122,7 @@ class GMapsScraper:
                     if GMapsScraper._daily_count >= DAILY_LIMIT:
                         logger.warning("Daily limit reached mid-scrape (%d). Stopping.", DAILY_LIMIT)
                         break
-                    detail = await self._extract_place(page, place_url, context=context, max_reviews=self.reviews_per_place)
+                    detail = await self._extract_place(page, place_url, max_reviews=self.reviews_per_place)
                     if detail:
                         lead = self._to_lead(detail, query)
                         leads.append(lead)
@@ -205,7 +207,7 @@ class GMapsScraper:
         return urls[:target_count] if target_count > 0 else urls
 
     @staticmethod
-    async def _extract_place(page: Page, url: str, context=None, max_reviews: int = 5) -> dict[str, Any] | None:
+    async def _extract_place(page: Page, url: str, max_reviews: int = 5) -> dict[str, Any] | None:
         await page.goto(url, wait_until="domcontentloaded", timeout=20_000)
         await page.wait_for_timeout(2000)
 
@@ -227,8 +229,7 @@ class GMapsScraper:
 
         review_el = await page.query_selector(SEL_REVIEW_COUNT)
         if review_el:
-            text = await review_el.inner_text()
-            match = REVIEW_COUNT_RE.search(text)
+            match = REVIEW_COUNT_RE.search(await review_el.get_attribute("aria-label") or "")
             if match:
                 detail["review_count"] = int(match.group(1).replace(",", ""))
 
@@ -256,30 +257,27 @@ class GMapsScraper:
             if label:
                 detail["price_level"] = label
 
-        hours_el = await page.query_selector(SEL_HOURS)
-        if hours_el:
-            label = await hours_el.get_attribute("aria-label")
-            if label:
-                detail["hours"] = label
+        hours = [
+            _format_hours_label(await el.get_attribute("aria-label") or "")
+            for el in await page.query_selector_all(SEL_HOURS)
+        ]
+        if hours:
+            detail["hours"] = "; ".join(hours)
 
         place_match = re.search(r"place/[^/]+/[^/]*!8m2!3d[^!]+!4d[^!]+", url)
         if place_match:
             detail["maps_url"] = url
 
-        if context and max_reviews > 0:
+        if max_reviews > 0:
             try:
-                from suplex.scraper.review_scraper import scrape_reviews
-                review_data = await scrape_reviews(
-                    context, page, place_url=url, max_reviews=max_reviews,
+                reviews = await scrape_reviews(
+                    page, max_reviews=max_reviews, expected_count=detail.get("review_count"),
                 )
-                if review_data.get("rating"):
-                    detail["rating"] = review_data["rating"]
-                if review_data.get("review_count"):
-                    detail["review_count"] = review_data["review_count"]
-                if review_data.get("reviews"):
-                    detail["reviews"] = review_data["reviews"]
             except Exception:
-                logger.debug("Review scraping failed for %s", url, exc_info=True)
+                logger.warning("Review scraping failed for %s", url, exc_info=True)
+                reviews = []
+            if reviews:
+                detail["reviews"] = reviews
 
         return detail
 
@@ -298,3 +296,9 @@ class GMapsScraper:
                 "search_query": query,
             },
         )
+
+
+def _format_hours_label(label: str) -> str:
+    text = label.removesuffix(HOURS_LABEL_SUFFIX).replace("\u202f", " ")
+    day, _, times = text.partition(", ")
+    return f"{day}: {times}" if times else day
