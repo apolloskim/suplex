@@ -1,11 +1,17 @@
+# Python
 __pycache__/
-*.pyc
-*.pyo
+*.py[co]
 *.egg-info/
 dist/
 build/
 .venv/
-.env
-*.db
 .ruff_cache/
 .pytest_cache/
+
+# Local data and secrets
+.env
+*.db
+
+# Personal editor / agent settings (never commit these)
+.claude/settings.local.json
+.DS_Store
