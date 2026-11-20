@@ -762,6 +762,14 @@ class LeadStore:
             )
             return cur.rowcount
 
+    def retry_failed_tasks(self, job_id: str) -> int:
+        with self._conn() as conn:
+            cur = conn.execute(
+                "UPDATE item_tasks SET status = 'pending', error = NULL WHERE job_id = ? AND status = 'failed'",
+                (job_id,),
+            )
+            return cur.rowcount
+
     def reset_processing_tasks(self, job_id: str) -> int:
         """Reset in-flight items immediately after a manual stop."""
         with self._conn() as conn:

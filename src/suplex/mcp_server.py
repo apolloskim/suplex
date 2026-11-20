@@ -576,7 +576,7 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "status": {
                         "type": "string",
-                        "enum": ["running", "done", "failed", "pending"],
+                        "enum": ["running", "done", "done_with_errors", "failed", "pending", "stopped"],
                         "description": "Filter by status",
                     },
                 },

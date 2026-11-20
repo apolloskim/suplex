@@ -718,7 +718,7 @@ def run_scrape_maps(query: str, location: str, max_results: int, scraper: str, n
     extra.extend(["-s", scraper])
     if no_enrich:
         extra.append("--no-enrich")
-    result = launch_scrape_job("maps", query, location, max_results=max_results, extra_args=extra)
+    result = launch_scrape_job("maps", query, location, extra_args=extra)
     click.echo(json.dumps(result, indent=2))
 
 
@@ -793,7 +793,7 @@ def run_scrape_linkedin(
         extra.extend(["--exclude", exclude])
     if no_enrich:
         extra.append("--no-enrich")
-    result = launch_scrape_job("linkedin", query, location, max_results=max_results, extra_args=extra)
+    result = launch_scrape_job("linkedin", query, location, extra_args=extra)
     click.echo(json.dumps(result, indent=2))
 
 

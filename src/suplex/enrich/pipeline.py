@@ -71,6 +71,9 @@ class EnrichmentPipeline:
         leads = self.store.get_unenriched(limit=limit)
         if not leads:
             logger.info("No unenriched leads to process")
+            if job_id:
+                self.store.create_job(job_id, "enrich", total=0)
+                self.store.finish_job(job_id, "done")
             return {"processed": 0}
 
         logger.info("Enriching %d leads", len(leads))

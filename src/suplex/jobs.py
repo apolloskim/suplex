@@ -10,12 +10,13 @@ import json
 import logging
 import os
 import signal
-import shutil
 import subprocess
 import sys
 import time
 import uuid
 from pathlib import Path
+
+import psutil
 
 from suplex.clock import utcnow
 from suplex.store.db import LeadStore
@@ -24,6 +25,10 @@ logger = logging.getLogger(__name__)
 
 LOG_DIR = Path.home() / ".config" / "suplex" / "logs"
 TERMINAL_JOB_STATUSES = {"done", "failed", "done_with_errors", "stopped"}
+BATCH_CHILD_TYPES = {
+    "scrape_maps", "scrape_linkedin", "enrich",
+    "reddit_watch", "reddit_revisit", "reddit_hydrate",
+}
 
 
 def launch_scrape_job(
@@ -31,7 +36,6 @@ def launch_scrape_job(
     query: str,
     location: str,
     *,
-    max_results: int = 0,
     extra_args: list[str] | None = None,
     job_id: str | None = None,
 ) -> dict:
@@ -39,14 +43,7 @@ def launch_scrape_job(
     job_id = job_id or _gen_id()
     log_path = _log_path(job_id)
 
-    cmd = [
-        _suplex_bin(), "scrape", source, query,
-        "-l", location,
-    ]
-    if max_results > 0:
-        cmd.extend(["-n", str(max_results)])
-    if extra_args:
-        cmd.extend(extra_args)
+    cmd = [*_suplex_cmd(), "scrape", source, query, "-l", location, *(extra_args or [])]
 
     # Pre-create job row with meta so resume can reconstruct the command.
     meta = {"type": "scrape", "source": source, "query": query, "location": location}
@@ -69,17 +66,12 @@ def launch_enrich_job(
     job_id = job_id or _gen_id()
     log_path = _log_path(job_id)
 
-    cmd = [
-        _suplex_bin(), "enrich",
-        "-n", str(limit),
-        "-lp", str(linkedin_posts),
-    ]
+    cmd = [*_suplex_cmd(), "enrich", "-n", str(limit), "-lp", str(linkedin_posts)]
+    meta = {"type": "enrich", "limit": limit, "linkedin_posts": linkedin_posts}
+    LeadStore().create_job(job_id, "enrich", total=0, meta=meta)
 
     env = {**os.environ, "SUPLEX_JOB_ID": job_id}
-
-    return _launch(job_id, cmd, env, log_path, meta={
-        "type": "enrich", "limit": limit, "linkedin_posts": linkedin_posts,
-    })
+    return _launch(job_id, cmd, env, log_path, meta=meta)
 
 
 def launch_reddit_watch_job(
@@ -308,6 +300,15 @@ def launch_batch_job(specs: list[dict], *, max_parallel: int = 3) -> dict:
 
     Each spec: {"type": "scrape_maps"|"scrape_linkedin"|"enrich", "query": ..., "location": ..., ...}
     """
+    if not specs:
+        return {"error": "A batch needs at least one job"}
+    unknown = sorted({str(spec.get("type")) for spec in specs} - BATCH_CHILD_TYPES)
+    if unknown:
+        return {
+            "error": f"Unknown job type(s): {', '.join(unknown)}. "
+                     f"Valid types: {', '.join(sorted(BATCH_CHILD_TYPES))}",
+        }
+
     batch_id = _gen_id()
     store = LeadStore()
 
@@ -344,7 +345,7 @@ def launch_batch_job(specs: list[dict], *, max_parallel: int = 3) -> dict:
 def advance_batch(batch_id: str, max_parallel: int = 3) -> dict:
     """Check batch status and launch next pending children if slots are open."""
     store = LeadStore()
-    status = store.get_batch_status(batch_id)
+    status = _reconciled_batch_status(store, batch_id)
     if not status:
         return {"error": f"Batch {batch_id} not found"}
 
@@ -374,7 +375,7 @@ def advance_batch(batch_id: str, max_parallel: int = 3) -> dict:
 def get_batch_status(batch_id: str) -> dict:
     """Get batch status with aggregated progress."""
     store = LeadStore()
-    status = store.get_batch_status(batch_id)
+    status = _reconciled_batch_status(store, batch_id)
     if not status:
         return {"error": f"Batch {batch_id} not found"}
     return status
@@ -390,7 +391,7 @@ def _meta_to_extra_args(job_type: str, meta: dict) -> list[str]:
         extra.extend(["--exclude", meta["exclude"]])
 
     if job_type == "scrape_maps":
-        if meta.get("scraper"):
+        if meta.get("scraper") in ("playwright", "apify"):
             extra.extend(["-s", meta["scraper"]])
     elif job_type == "scrape_linkedin":
         _LI_FLAG_MAP = {
@@ -433,7 +434,7 @@ def _launch_child_job(child: dict) -> None:
         extra = _meta_to_extra_args(job_type, meta)
         if max_results > 0:
             extra.extend(["-n", str(max_results)])
-        launch_scrape_job(source, query, location, max_results=max_results, extra_args=extra, job_id=job_id)
+        launch_scrape_job(source, query, location, extra_args=extra, job_id=job_id)
     elif job_type == "enrich":
         launch_enrich_job(
             limit=meta.get("limit", 100),
@@ -498,6 +499,7 @@ def resume_job(job_id: str, scraper_override: str | None = None) -> dict:
     job = store.get_job(job_id)
     if not job:
         return {"error": f"Job {job_id} not found"}
+    job = _reconcile_job(store, job)
 
     if job["status"] == "running":
         return {"error": "Job is already running", "job_id": job_id}
@@ -509,16 +511,8 @@ def resume_job(job_id: str, scraper_override: str | None = None) -> dict:
             return {"error": "Job already completed with no failures", "job_id": job_id}
 
     # Reset failed tasks to pending so they get retried.
-    with store._conn() as conn:
-        conn.execute(
-            "UPDATE item_tasks SET status = 'pending', attempts = attempts WHERE job_id = ? AND status = 'failed'",
-            (job_id,),
-        )
-        reset = conn.execute(
-            "SELECT changes()"
-        ).fetchone()[0]
-
-    store.reset_stale_tasks(job_id)
+    reset = store.retry_failed_tasks(job_id)
+    store.reset_processing_tasks(job_id)
 
     meta = job["meta"]
     job_type = job["type"]
@@ -635,6 +629,7 @@ def get_job_status(job_id: str) -> dict:
     job = store.get_job(job_id)
     if not job:
         return {"error": f"Job {job_id} not found"}
+    job = _reconcile_job(store, job)
 
     result = {
         "job_id": job["id"],
@@ -670,6 +665,8 @@ def get_job_status(job_id: str) -> dict:
 def list_jobs(status: str | None = None) -> list[dict]:
     """List recent jobs."""
     store = LeadStore()
+    for job in store.list_jobs(status="running"):
+        _reconcile_job(store, job)
     return store.list_jobs(status=status)
 
 
@@ -697,13 +694,13 @@ def _spawn_watchdog(batch_id: str, max_parallel: int) -> None:
         f"from suplex.jobs import _watchdog_loop; _watchdog_loop('{batch_id}', {max_parallel})",
     ]
     log_path = _log_path(f"{batch_id}_watchdog")
-    log_file = open(log_path, "w")
-    proc = subprocess.Popen(
-        cmd,
-        stdout=log_file,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
+    with open(log_path, "w") as log_file:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
     store = LeadStore()
     batch = store.get_job(batch_id)
     meta = batch["meta"] if batch else {}
@@ -716,12 +713,10 @@ def _watchdog_loop(batch_id: str, max_parallel: int, poll_interval: int = 15) ->
 
     Runs as a detached subprocess. Exits when batch is complete.
     """
-    import time
-
     store = LeadStore()
 
     while True:
-        status = store.get_batch_status(batch_id)
+        status = _reconciled_batch_status(store, batch_id)
         if not status:
             break
 
@@ -855,41 +850,43 @@ def _pid_exists(pid: int | None) -> bool:
     if pid is None:
         return False
     try:
-        import psutil
-    except ImportError:
-        psutil = None
-
-    if psutil is not None:
-        return psutil.pid_exists(pid)
-
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
+        return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
         return False
-    except PermissionError:
+    except psutil.AccessDenied:
         return True
-    return True
 
 
 def _wait_for_exit(pid: int, *, timeout_seconds: float) -> bool:
     try:
-        import psutil
-    except ImportError:
-        deadline = time.monotonic() + timeout_seconds
-        while time.monotonic() < deadline:
-            if not _pid_exists(pid):
-                return True
-            time.sleep(0.1)
-        return not _pid_exists(pid)
-
-    try:
-        proc = psutil.Process(pid)
-        proc.wait(timeout=timeout_seconds)
+        psutil.Process(pid).wait(timeout=timeout_seconds)
         return True
     except psutil.NoSuchProcess:
         return True
     except psutil.TimeoutExpired:
         return False
+
+
+def _reconcile_job(store: LeadStore, job: dict) -> dict:
+    if job["status"] != "running":
+        return job
+    pid = _normalize_runtime_value(job.get("meta", {}).get("runtime", {}).get("pid"))
+    if pid is None or _pid_exists(pid):
+        return job
+    store.reset_processing_tasks(job["id"])
+    store.finish_job(
+        job["id"], "failed",
+        error=f"Process {pid} exited without reporting a result. Run `suplex resume {job['id']}` to continue.",
+    )
+    return store.get_job(job["id"]) or job
+
+
+def _reconciled_batch_status(store: LeadStore, batch_id: str) -> dict | None:
+    status = store.get_batch_status(batch_id)
+    if not status:
+        return None
+    dead = [c for c in status["children"] if _reconcile_job(store, c)["status"] != c["status"]]
+    return store.get_batch_status(batch_id) if dead else status
 
 
 def _stop_single_job(
@@ -973,14 +970,10 @@ def _stop_batch_job(store: LeadStore, job: dict, *, force: bool) -> dict:
     }
 
 
-def _suplex_bin() -> str:
-    """Find the suplex executable — either installed entry point or python -m."""
-    # Check if 'suplex' is on PATH (installed via pip/uv).
-    suplex = shutil.which("suplex")
-    if suplex:
-        return suplex
-    # Fallback: use the same Python that's running us.
-    return sys.executable  # Will need __main__.py
+def _suplex_cmd() -> list[str]:
+    if getattr(sys, "frozen", False):
+        return [sys.executable]
+    return [sys.executable, "-m", "suplex"]
 
 
 def _gen_id() -> str:
@@ -998,19 +991,22 @@ def _state_path(job_id: str) -> Path:
 
 
 def _launch(job_id: str, cmd: list[str], env: dict, log_path: Path, meta: dict) -> dict:
-    """Spawn a detached subprocess."""
-    log_file = open(log_path, "w")
-
-    proc = subprocess.Popen(
-        cmd,
-        stdout=log_file,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,  # Detach from terminal.
-        env=env,
-    )
+    store = LeadStore()
+    try:
+        with open(log_path, "w") as log_file:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                env=env,
+            )
+    except OSError as exc:
+        error = f"Could not start job process: {exc}"
+        store.finish_job(job_id, "failed", error=error)
+        return {"job_id": job_id, "status": "failed", "error": error, **meta}
 
     runtime = _runtime_meta_from_process(proc, log_path)
-    store = LeadStore()
     job = store.get_job(job_id)
     job_meta = dict(job["meta"]) if job else dict(meta)
     job_meta["runtime"] = runtime
