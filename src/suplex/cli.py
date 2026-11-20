@@ -578,7 +578,10 @@ def export(source: str | None, status: str | None, enriched: bool, output: str) 
 @click.option("--search", "-q", default=None, help="Search for a city, region, or country")
 def regions(query: str | None, search: str | None) -> None:
     """List regions in a country, or search for any location."""
+    from suplex.geo.seed import ensure_cities_seeded
+
     store = LeadStore()
+    ensure_cities_seeded(store)
 
     if search:
         import unicodedata
