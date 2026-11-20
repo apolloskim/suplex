@@ -1,14 +1,6 @@
 from __future__ import annotations
 
-import importlib.util
-from pathlib import Path
-
-
-MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "reddit_playwright_probe.py"
-SPEC = importlib.util.spec_from_file_location("reddit_playwright_probe", MODULE_PATH)
-assert SPEC and SPEC.loader
-MODULE = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(MODULE)
+from suplex import reddit_extract as MODULE
 
 
 def test_strip_query_and_fragment() -> None:

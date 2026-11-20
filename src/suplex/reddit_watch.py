@@ -2,28 +2,26 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import importlib.util
 import json
 import os
-import re
-import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import ParseResult, parse_qsl, urlencode, urlparse, urlunparse
+from urllib.parse import ParseResult, urlencode, urlparse, urlunparse
 
-from playwright.async_api import Browser, BrowserContext, Page, async_playwright
+from playwright.async_api import Page
 
+from suplex.reddit_extract import (
+    close_browser,
+    extract_post,
+    fetch_browser_response,
+    isoformat_utc_timestamp,
+    launch_browser,
+    pick_browser_executable,
+    strip_query_and_fragment,
+)
 from suplex.store.db import LeadStore
 
-
-MAC_BROWSER_EXECUTABLES = {
-    "com.google.chrome": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    "com.google.Chrome.canary": "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
-    "com.microsoft.edgemac": "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-    "company.thebrowser.Browser": "/Applications/Arc.app/Contents/MacOS/Arc",
-    "com.brave.Browser": "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
-}
 
 POLICY_PRESETS: dict[str, dict[str, Any]] = {
     "conservative": {
@@ -48,9 +46,6 @@ POLICY_PRESETS: dict[str, dict[str, Any]] = {
         "revisit_after_minutes": [30, 120, 480],
     },
 }
-
-_PROBE_MODULE: Any | None = None
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -186,90 +181,6 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def detect_default_browser_executable() -> str | None:
-    try:
-        result = subprocess.run(
-            ["defaults", "read", "com.apple.LaunchServices/com.apple.launchservices.secure", "LSHandlers"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-    except Exception:
-        return None
-
-    marker = 'LSHandlerContentType = "com.apple.default-app.web-browser";'
-    marker_index = result.stdout.find(marker)
-    if marker_index == -1:
-        return None
-
-    following = result.stdout[marker_index: marker_index + 400]
-    match = re.search(r'LSHandlerRoleAll = "([^"]+)";', following)
-    if not match:
-        return None
-
-    bundle_id = match.group(1)
-    path = MAC_BROWSER_EXECUTABLES.get(bundle_id)
-    if path and Path(path).exists():
-        return path
-    return None
-
-
-def pick_browser_executable(cli_value: str | None) -> str | None:
-    if cli_value:
-        return cli_value
-    detected = detect_default_browser_executable()
-    if detected:
-        return detected
-    chrome = MAC_BROWSER_EXECUTABLES["com.google.chrome"]
-    return chrome if Path(chrome).exists() else None
-
-
-async def launch_browser(executable_path: str | None, headful: bool) -> tuple[Browser, BrowserContext]:
-    pw = await async_playwright().start()
-    browser = await pw.chromium.launch(
-        executable_path=executable_path,
-        headless=not headful,
-        args=["--disable-blink-features=AutomationControlled"],
-    )
-    browser._suplex_playwright = pw  # type: ignore[attr-defined]
-    context = await browser.new_context(
-        viewport={"width": 1440, "height": 900},
-        locale="en-US",
-        user_agent=(
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/135.0.0.0 Safari/537.36"
-        ),
-    )
-    return browser, context
-
-
-async def close_browser(browser: Browser, context: BrowserContext) -> None:
-    await context.close()
-    await browser.close()
-    pw = getattr(browser, "_suplex_playwright", None)
-    if pw is not None:
-        await pw.stop()
-
-
-async def fetch_browser_response(page: Page, url: str) -> dict[str, Any]:
-    return await page.evaluate(
-        """async ({ url }) => {
-            const response = await fetch(url, {
-                method: "GET",
-                credentials: "include",
-            });
-            return {
-                ok: response.ok,
-                status: response.status,
-                content_type: response.headers.get("content-type"),
-                text: await response.text(),
-            };
-        }""",
-        {"url": url},
-    )
-
-
 def build_subreddit_feed_url(subreddit: str, sort: str, limit: int, time_window: str) -> str:
     url = f"https://www.reddit.com/r/{subreddit}/{sort}.json?limit={limit}&raw_json=1"
     if sort == "top":
@@ -286,39 +197,6 @@ def post_permalink(post: dict[str, Any]) -> str | None:
     return f"https://www.reddit.com{permalink}"
 
 
-def strip_query_and_fragment(url: str) -> str:
-    parsed = urlparse(url)
-    return urlunparse(
-        ParseResult(
-            scheme=parsed.scheme,
-            netloc=parsed.netloc,
-            path=parsed.path.rstrip("/") + "/",
-            params="",
-            query="",
-            fragment="",
-        )
-    )
-
-
-def with_query_param(url: str, key: str, value: str | None) -> str:
-    parsed = urlparse(url)
-    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
-    if value is None:
-        query.pop(key, None)
-    else:
-        query[key] = value
-    return urlunparse(
-        ParseResult(
-            scheme=parsed.scheme,
-            netloc=parsed.netloc,
-            path=parsed.path,
-            params=parsed.params,
-            query=urlencode(query),
-            fragment="",
-        )
-    )
-
-
 def build_post_json_url(url: str) -> str:
     canonical = strip_query_and_fragment(url)
     parsed = urlparse(canonical)
@@ -333,16 +211,6 @@ def build_post_json_url(url: str) -> str:
             fragment="",
         )
     )
-
-
-def isoformat_utc_timestamp(value: Any) -> str | None:
-    if value is None:
-        return None
-    try:
-        timestamp = float(value)
-    except (TypeError, ValueError):
-        return None
-    return datetime.fromtimestamp(timestamp, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f+0000")
 
 
 def parse_timestamp(value: str | None) -> datetime | None:
@@ -539,20 +407,6 @@ def evaluate_post_action(
     if revisit_at:
         return "revisit", revisit_at
     return "discard", None
-
-
-def load_probe_module() -> Any:
-    global _PROBE_MODULE
-    if _PROBE_MODULE is not None:
-        return _PROBE_MODULE
-    module_path = Path(__file__).resolve().parents[2] / "scripts" / "reddit_playwright_probe.py"
-    spec = importlib.util.spec_from_file_location("reddit_playwright_probe", module_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError("Could not load reddit_playwright_probe.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    _PROBE_MODULE = module
-    return module
 
 
 async def prime_reddit_session(page: Page, subreddit: str, sort: str) -> dict[str, Any]:
@@ -894,7 +748,6 @@ async def run_hydrate(args: argparse.Namespace) -> int:
             store.finish_job(job_id, "done")
         return 0
 
-    probe = load_probe_module()
     browser_executable = pick_browser_executable(args.browser_executable)
     browser, context = await launch_browser(browser_executable, args.headful)
     processed = 0
@@ -905,7 +758,7 @@ async def run_hydrate(args: argparse.Namespace) -> int:
         for stored_post in posts[: args.limit]:
             processed += 1
             try:
-                payload = await probe.extract_post(
+                payload = await extract_post(
                     context,
                     stored_post["url"],
                     args.comments_limit,
