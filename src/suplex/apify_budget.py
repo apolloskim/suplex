@@ -11,21 +11,31 @@ from suplex.config import Config
 logger = logging.getLogger(__name__)
 
 
-async def get_apify_budget() -> dict:
-    """Get current Apify usage, limits, and remaining budget."""
-    token = Config.load().apify_token
+async def get_apify_budget(token: str | None = None) -> dict:
+    """Get current Apify usage, limits, and remaining budget.
+
+    Returns ``{"error": ...}`` when the budget cannot be determined (no token,
+    network failure, non-200 response). Callers decide what that means.
+    """
+    token = token or Config.load().apify_token
     if not token:
         return {"error": "No Apify token configured"}
 
-    async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.get(
-            "https://api.apify.com/v2/users/me/limits",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        if resp.status_code != 200:
-            return {"error": f"Apify API returned {resp.status_code}"}
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                "https://api.apify.com/v2/users/me/limits",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    except httpx.HTTPError as exc:
+        return {"error": f"Could not reach Apify: {exc}"}
 
-        data = resp.json().get("data", {})
+    if resp.status_code == 401:
+        return {"error": "Apify rejected the token (HTTP 401). Run `suplex setup` to replace it."}
+    if resp.status_code != 200:
+        return {"error": f"Apify API returned {resp.status_code}"}
+
+    data = resp.json().get("data", {})
 
     limits = data.get("limits", {})
     current = data.get("current", {})

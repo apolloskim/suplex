@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+import time
+from collections.abc import Awaitable, Callable
 
 import anyio
 
 from suplex.apify_budget import get_apify_budget
-from suplex.geo.tiles import resolve_tiles
-from suplex.models import Lead, ScrapeTarget, LeadSource
+from suplex.geo.tiles import filter_tiles, resolve_tiles
+from suplex.models import Lead, LeadSource, ScrapeTarget
 from suplex.scraper.apify_scraper import ApifyScraper
 from suplex.scraper.gmaps_scraper import GMapsScraper
 from suplex.scraper.linkedin_scraper import LinkedInScraper
@@ -21,15 +22,30 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_BROWSER_CONCURRENCY = 3
 DEFAULT_API_CONCURRENCY = 10
+BUDGET_CACHE_SECONDS = 60
+MAX_ERROR_LENGTH = 300
+
+Collector = Callable[[str, list[Lead]], Awaitable[None]]
+
+
+class ScrapeConfigError(ValueError):
+    """The requested scrape cannot run with the current configuration."""
+
+
+class ApifyBudgetExhausted(RuntimeError):
+    """The Apify account has no remaining monthly budget."""
 
 
 class ScrapeCoordinator:
     """Orchestrates concurrent scraping with resource bounds, job tracking, and crash recovery.
 
-    The `scraper` parameter controls routing for Google Maps:
-      - "auto": Apify for cities with pop >= 50K, Playwright for smaller (default)
-      - "playwright": Always use Playwright (free, slower)
-      - "apify": Always use Apify (paid, faster, more results)
+    ``scraper`` picks the engine for Google Maps targets:
+      - "playwright": local browser (free, slower) — the default
+      - "apify": Apify actor (paid, faster, more results)
+    LinkedIn always goes through Apify; websites always use the site scraper.
+
+    After ``run`` returns, ``failed_targets`` maps the item key of every target
+    that failed in that run to a short reason.
     """
 
     def __init__(
@@ -49,8 +65,12 @@ class ScrapeCoordinator:
         self.apify_scraper = ApifyScraper(token=apify_token)
         self.gmaps_scraper = GMapsScraper(reviews_per_place=reviews_per_place)
         self.linkedin_scraper = LinkedInScraper(token=apify_token, store=store)
-        self._has_apify = bool(apify_token)
+        self._apify_token = apify_token or ""
         self._scraper = scraper
+        self._budget_lock = asyncio.Lock()
+        self._budget_ok = True
+        self._budget_checked_at: float | None = None
+        self.failed_targets: dict[str, str] = {}
 
     async def run(
         self,
@@ -59,79 +79,17 @@ class ScrapeCoordinator:
         job_id: str | None = None,
     ) -> list[Lead]:
         """Run all scrape targets concurrently. Resumable via job_id."""
-        # Expand tiles.
-        expanded: list[ScrapeTarget] = []
-        for target in targets:
-            if target.source in (LeadSource.GOOGLE_MAPS, LeadSource.LINKEDIN) and target.location:
-                # Scraper is explicit: playwright or apify. No auto.
-                tiles = resolve_tiles(
-                    target.query, target.location,
-                    max_results_per_tile=target.max_results,
-                    source=target.source, has_apify=False, store=self.store,
-                )
-                # Merge original target's extra into each tile (preserving tile-specific keys).
-                for t in tiles:
-                    merged = {**target.extra, **t.extra}
-                    t.extra = merged
-                    t.extra["tile_scraper"] = self._scraper
+        self._check_configuration(targets)
+        self.failed_targets = {}
 
-                # Filter tiles by --only / --exclude flags.
-                # Accepts: US state codes (WY), region names (Tokyo), country codes (JP).
-                only_filter = target.extra.get("only_states")
-                exclude_filter = target.extra.get("exclude_states")
-                if only_filter or exclude_filter:
-                    import unicodedata
-
-                    def _strip(s: str) -> str:
-                        return "".join(
-                            c for c in unicodedata.normalize("NFD", s.lower()) if unicodedata.category(c) != "Mn"
-                        )
-
-                    def _tile_matches(tile: ScrapeTarget, filters: list[str]) -> bool:
-                        normalized_filters = [_strip(f) for f in filters]
-
-                        # Match tile_state (accent-insensitive, substring).
-                        ts = _strip(tile.extra.get("tile_state", ""))
-                        for nf in normalized_filters:
-                            if nf and ts and (nf in ts or ts in nf or nf == ts):
-                                return True
-
-                        # Match tile_country code.
-                        tc = tile.extra.get("tile_country", "").upper()
-                        if tc in [f.upper() for f in filters]:
-                            return True
-
-                        # Match location string (works for both Maps and LinkedIn).
-                        loc = _strip(tile.location or "")
-                        for nf in normalized_filters:
-                            if nf and nf in loc:
-                                return True
-
-                        # Match tile_city.
-                        city = _strip(tile.extra.get("tile_city", ""))
-                        for nf in normalized_filters:
-                            if nf and city and (nf in city or city in nf):
-                                return True
-
-                        return False
-
-                    if only_filter:
-                        tiles = [t for t in tiles if _tile_matches(t, only_filter)]
-                    if exclude_filter:
-                        tiles = [t for t in tiles if not _tile_matches(t, exclude_filter)]
-
-                expanded.extend(tiles)
-            else:
-                expanded.append(target)
-
+        expanded = self._expand(targets)
         if len(expanded) != len(targets):
             logger.info("Expanded %d targets → %d tiles", len(targets), len(expanded))
 
         # Seed item tasks for crash recovery.
         if job_id:
             self.store.create_job(job_id, "scrape", total=len(expanded))
-            item_keys = [f"{t.source.value}:{t.location}:{t.query}" for t in expanded]
-            self.store.seed_item_tasks(job_id, item_keys)
+            self.store.seed_item_tasks(job_id, [_item_key(t) for t in expanded])
             # Reset any stale tasks from a previous crashed run.
             reset = self.store.reset_stale_tasks(job_id)
             if reset:
@@ -154,95 +112,160 @@ class ScrapeCoordinator:
 
         try:
             async with anyio.create_task_group() as tg:
-                for i, target in enumerate(expanded):
-                    item_key = f"{target.source.value}:{target.location}:{target.query}"
+                for target in expanded:
+                    item_key = _item_key(target)
                     # Skip already-done items (crash recovery).
                     if job_id and self.store.is_item_done(job_id, item_key):
                         completed_count += 1
                         continue
                     tg.start_soon(self._run_target, target, item_key, _collect, job_id)
-
-            if job_id:
-                self.store.update_job_progress(job_id, len(expanded), len(all_leads))
-                self.store.finish_job(job_id, "done")
         except Exception as e:
             if job_id:
-                self.store.finish_job(job_id, "failed", error=str(e))
+                self.store.finish_job(job_id, "failed", error=str(e)[:MAX_ERROR_LENGTH])
             raise
 
+        if job_id:
+            self.store.update_job_progress(job_id, completed_count, len(all_leads))
+            self._finish_job(job_id, total=len(expanded))
+
+        if self.failed_targets:
+            logger.warning(
+                "%d of %d targets failed (first reason: %s)",
+                len(self.failed_targets), len(expanded), next(iter(self.failed_targets.values())),
+            )
         logger.info("Scraped %d leads from %d targets", len(all_leads), len(expanded))
         return all_leads
 
+    # ------------------------------------------------------------------
+    # Planning
+    # ------------------------------------------------------------------
+
+    def _check_configuration(self, targets: list[ScrapeTarget]) -> None:
+        """Fail before any work starts if a target needs Apify and there is no token."""
+        if self._apify_token:
+            return
+        sources = {t.source for t in targets}
+        if LeadSource.LINKEDIN in sources:
+            raise ScrapeConfigError(
+                "LinkedIn scraping runs on Apify and no Apify token is configured. "
+                "Run `suplex setup` or set APIFY_TOKEN."
+            )
+        if LeadSource.GOOGLE_MAPS in sources and self._scraper == "apify":
+            raise ScrapeConfigError(
+                "The Apify scraper was requested for Google Maps but no Apify token is configured. "
+                "Run `suplex setup`, set APIFY_TOKEN, or use `-s playwright`."
+            )
+
+    def _expand(self, targets: list[ScrapeTarget]) -> list[ScrapeTarget]:
+        """Turn each located Maps/LinkedIn target into per-city tiles and apply region filters."""
+        expanded: list[ScrapeTarget] = []
+        for target in targets:
+            if target.source not in (LeadSource.GOOGLE_MAPS, LeadSource.LINKEDIN) or not target.location:
+                expanded.append(target)
+                continue
+
+            tiles = resolve_tiles(
+                target.query, target.location,
+                max_results_per_tile=target.max_results,
+                source=target.source, store=self.store,
+            )
+            # Carry the original target's options onto each tile (tile-specific keys win).
+            for tile in tiles:
+                tile.extra = {**target.extra, **tile.extra}
+
+            expanded.extend(filter_tiles(
+                tiles,
+                only=target.extra.get("only_states"),
+                exclude=target.extra.get("exclude_states"),
+            ))
+        return expanded
+
+    # ------------------------------------------------------------------
+    # Execution
+    # ------------------------------------------------------------------
+
     async def _run_target(
         self, target: ScrapeTarget, item_key: str,
-        callback: Any, job_id: str | None,
+        collect: Collector, job_id: str | None,
     ) -> None:
         try:
             if target.source == LeadSource.PLAYWRIGHT:
-                await self._run_with_limiter(
-                    self.browser_limiter, self.site_scraper.scrape, target, item_key, callback,
-                )
-            elif target.source == LeadSource.GOOGLE_MAPS:
-                use_apify = (
-                    self._has_apify
-                    and target.extra.get("tile_scraper", "auto") != "playwright"
-                )
-                if use_apify:
-                    if not await self._check_apify_budget():
-                        logger.warning("Apify budget exhausted — skipping: %s", target.query)
-                        if job_id:
-                            self.store.fail_item_task(job_id, item_key, "apify_budget_exhausted")
-                        return
-                    async with self.api_limiter:
-                        leads = await self.apify_scraper.scrape(target)
-                        await callback(item_key, leads)
-                else:
-                    await self._run_with_limiter(
-                        self.browser_limiter, self.gmaps_scraper.scrape, target, item_key, callback,
-                    )
-            elif target.source == LeadSource.LINKEDIN:
-                if not await self._check_apify_budget():
-                    logger.warning("Apify budget exhausted — skipping LinkedIn: %s", target.query)
-                    if job_id:
-                        self.store.fail_item_task(job_id, item_key, "apify_budget_exhausted")
-                    return
-                async with self.api_limiter:
-                    leads = await self.linkedin_scraper.scrape(target)
-                    await callback(item_key, leads)
-            else:
+                async with self.browser_limiter:
+                    leads = await self.site_scraper.scrape(target)
+            elif target.source == LeadSource.GOOGLE_MAPS and self._scraper == "apify":
+                await self._require_apify_budget()
                 async with self.api_limiter:
                     leads = await self.apify_scraper.scrape(target)
-                    await callback(item_key, leads)
-        except Exception:
-            logger.exception("Failed target: %s", target.query)
-            if job_id:
-                self.store.fail_item_task(job_id, item_key, "exception")
+            elif target.source == LeadSource.GOOGLE_MAPS:
+                async with self.browser_limiter:
+                    leads = await self.gmaps_scraper.scrape(target)
+            elif target.source == LeadSource.LINKEDIN:
+                await self._require_apify_budget()
+                async with self.api_limiter:
+                    leads = await self.linkedin_scraper.scrape(target)
+            else:
+                raise ValueError(f"No scraper for source: {target.source}")
+            await collect(item_key, leads)
+        except ApifyBudgetExhausted as exc:
+            logger.warning("Skipping %s: %s", item_key, exc)
+            self._record_failure(job_id, item_key, "apify_budget_exhausted")
+        except Exception as exc:
+            logger.exception("Failed target: %s", item_key)
+            self._record_failure(job_id, item_key, f"{type(exc).__name__}: {exc}"[:MAX_ERROR_LENGTH])
 
-    async def _check_apify_budget(self) -> bool:
-        """Check if Apify budget has remaining credits. Cached for 60 seconds."""
-        import time
-        now = time.time()
-        if hasattr(self, "_budget_cache") and now - self._budget_cache_time < 60:
-            return self._budget_ok
+    def _record_failure(self, job_id: str | None, item_key: str, reason: str) -> None:
+        self.failed_targets[item_key] = reason
+        if job_id:
+            self.store.fail_item_task(job_id, item_key, reason)
 
-        try:
-            budget = await get_apify_budget()
-            self._budget_ok = not budget.get("over_limit", False) and budget.get("remaining_usd", 0) > 0
-            self._budget_cache_time = now
+    def _finish_job(self, job_id: str, *, total: int) -> None:
+        """Close the job row. A job with failed tiles is not plain "done" — it can be resumed."""
+        if not self.failed_targets:
+            self.store.finish_job(job_id, "done")
+            return
+        first_reason = next(iter(self.failed_targets.values()))
+        self.store.finish_job(
+            job_id,
+            "done_with_errors",
+            error=f"{len(self.failed_targets)} of {total} targets failed; first: {first_reason}"[:MAX_ERROR_LENGTH],
+        )
+
+    async def _require_apify_budget(self) -> None:
+        """Raise ApifyBudgetExhausted if the Apify account is over its monthly limit.
+
+        The answer is cached for a minute and guarded by a lock, so a job with
+        hundreds of tiles asks Apify once rather than once per tile.
+        """
+        async with self._budget_lock:
+            now = time.monotonic()
+            stale = self._budget_checked_at is None or now - self._budget_checked_at >= BUDGET_CACHE_SECONDS
+            if stale:
+                self._budget_ok = await self._fetch_budget_ok()
+                self._budget_checked_at = now
             if not self._budget_ok:
-                logger.warning(
-                    "Apify budget: $%.2f used / $%.2f limit — over budget",
-                    budget.get("used_usd", 0), budget.get("plan_limit_usd", 0),
-                )
-            return self._budget_ok
-        except Exception:
-            # If budget check fails, allow the run (don't block on API errors).
+                raise ApifyBudgetExhausted("Apify monthly budget is used up")
+
+    async def _fetch_budget_ok(self) -> bool:
+        try:
+            budget = await get_apify_budget(self._apify_token)
+        except Exception as exc:  # Never let a budget lookup take the whole scrape down.
+            budget = {"error": str(exc)}
+
+        if budget.get("error"):
+            # Unknown is not the same as exhausted: let the run proceed and let
+            # Apify itself reject it if the account really is over its limit.
+            logger.warning("Could not check Apify budget (%s) — continuing", budget["error"])
             return True
 
-    async def _run_with_limiter(
-        self, limiter: anyio.CapacityLimiter, fn: Any,
-        target: ScrapeTarget, item_key: str, callback: Any,
-    ) -> None:
-        async with limiter:
-            leads = await fn(target)
-            await callback(item_key, leads)
+        ok = not budget.get("over_limit", False) and budget.get("remaining_usd", 0) > 0
+        if not ok:
+            logger.warning(
+                "Apify budget: $%.2f used / $%.2f limit — over budget",
+                budget.get("used_usd", 0), budget.get("plan_limit_usd", 0),
+            )
+        return ok
+
+
+def _item_key(target: ScrapeTarget) -> str:
+    """Stable identifier for one unit of work inside a job (used for resume)."""
+    return f"{target.source.value}:{target.location}:{target.query}"

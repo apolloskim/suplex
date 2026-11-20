@@ -595,7 +595,7 @@ class LeadStore:
                 VALUES (?, ?, 'running', ?, 0, 0, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     status='running', total=CASE WHEN excluded.total > 0 THEN excluded.total ELSE jobs.total END,
-                    started_at=excluded.started_at
+                    started_at=excluded.started_at, finished_at=NULL, error=NULL
                 """,
                 (job_id, job_type, total, utcnow().isoformat(), json.dumps(meta or {})),
             )
@@ -683,6 +683,7 @@ class LeadStore:
             "status": dict(parent)["status"],
             "total_jobs": len(children),
             "done": sum(1 for c in children if c["status"] == "done"),
+            "done_with_errors": sum(1 for c in children if c["status"] == "done_with_errors"),
             "running": sum(1 for c in children if c["status"] == "running"),
             "failed": sum(1 for c in children if c["status"] == "failed"),
             "pending": sum(1 for c in children if c["status"] == "pending"),

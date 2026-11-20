@@ -16,12 +16,15 @@ import re
 from typing import Any
 
 from suplex.models import Lead, LeadSource, ScrapeTarget, VerificationStatus
+from suplex.scraper.apify_runner import run_actor
 from suplex.scraper.site_scraper import SiteScraper
 from suplex.store.db import LeadStore
 from suplex.urls import domain_of
 from suplex.verify.verifier import EmailVerifier
 
 logger = logging.getLogger(__name__)
+
+LINKEDIN_POSTS_ACTOR = "harvestapi/linkedin-profile-posts"
 
 # Person name patterns (first.last, flast, etc.)
 PERSON_PATTERNS = [
@@ -275,20 +278,14 @@ class EnrichmentPipeline:
         return {}
 
     async def _fetch_linkedin_posts(self, linkedin_url: str) -> list[dict]:
-        from apify_client import ApifyClientAsync
-
-        client = ApifyClientAsync(self.apify_token)
-        run = await client.actor("harvestapi/linkedin-profile-posts").call(
-            run_input={
-                "profileUrls": [linkedin_url],
-                "maxItems": self.linkedin_posts,
-            },
+        items = await run_actor(
+            self.apify_token,
+            LINKEDIN_POSTS_ACTOR,
+            {"profileUrls": [linkedin_url], "maxItems": self.linkedin_posts},
         )
-        dataset_id = run["defaultDatasetId"]
-        items_page = await client.dataset(dataset_id).list_items()
 
         posts = []
-        for item in items_page.items:
+        for item in items:
             text = item.get("content") or item.get("text") or item.get("commentary") or ""
             posts.append({
                 "text": text[:500],

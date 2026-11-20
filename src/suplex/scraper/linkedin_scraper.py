@@ -19,9 +19,8 @@ import logging
 import os
 from typing import Any
 
-from apify_client import ApifyClientAsync
-
-from suplex.models import Lead, LeadSource, ScrapeTarget
+from suplex.models import Lead, LeadSource, ScrapeTarget, VerificationStatus
+from suplex.scraper.apify_runner import ApifyError, run_actor
 from suplex.store.db import LeadStore
 
 logger = logging.getLogger(__name__)
@@ -73,8 +72,9 @@ class LinkedInScraper:
 
     async def scrape(self, target: ScrapeTarget) -> list[Lead]:
         if not self.token:
-            logger.error("No APIFY_TOKEN — cannot scrape LinkedIn")
-            return []
+            raise ApifyError(
+                "LinkedIn scraping needs an Apify token. Run `suplex setup` or set APIFY_TOKEN."
+            )
 
         query = target.query
         location = target.location
@@ -91,7 +91,7 @@ class LinkedInScraper:
 
         logger.info("LinkedIn scrape: '%s' in %s → %s", query, location, li_locations[:3])
 
-        items = await self._run_actor(run_input)
+        items = await run_actor(self.token, LINKEDIN_ACTOR, run_input)
         leads = [self._to_lead(item, query, location) for item in items]
 
         logger.info("LinkedIn: %d profiles from '%s' in '%s'", len(leads), query, location)
@@ -220,16 +220,6 @@ class LinkedInScraper:
 
         return run_input
 
-    async def _run_actor(self, run_input: dict[str, Any]) -> list[dict[str, Any]]:
-        """Run the LinkedIn actor and collect all results."""
-        client = ApifyClientAsync(self.token)
-        run = await client.actor(LINKEDIN_ACTOR).call(run_input=run_input)
-        dataset_id = run["defaultDatasetId"]
-        items_page = await client.dataset(dataset_id).list_items()
-        items = items_page.items
-        logger.info("LinkedIn actor returned %d profiles", len(items))
-        return items
-
     @staticmethod
     def _to_lead(item: dict[str, Any], query: str, location: str | None) -> Lead:
         """Convert an Apify LinkedIn profile to a Lead with all SDR-relevant signals."""
@@ -292,7 +282,6 @@ class LinkedInScraper:
         phone = item.get("phone") or item.get("phoneNumber", "")
 
         # Verification status — LinkedIn emails are pre-verified by Apify.
-        from suplex.models import VerificationStatus
         verification = VerificationStatus.PENDING
         if email and email_status:
             if email_status in ("valid", "safe"):

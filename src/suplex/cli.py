@@ -8,10 +8,15 @@ import logging
 import os
 import sys
 
+from typing import TYPE_CHECKING
+
 import click
 
 from suplex.models import LeadSource, ScrapeTarget, VerificationStatus
 from suplex.store.db import LeadStore
+
+if TYPE_CHECKING:
+    from suplex.scraper.coordinator import ScrapeCoordinator
 
 logging.basicConfig(
     level=logging.INFO,
@@ -293,9 +298,7 @@ def scrape_maps(query: str, location: str | None, max_results: int, scraper: str
         max_results=max_results,
         extra=extra,
     )
-    job_id = os.environ.get("SUPLEX_JOB_ID")
-    leads = asyncio.run(coord.run([target], job_id=job_id))
-    click.echo(json.dumps({"leads": len(leads)}, indent=2))
+    _run_scrape(coord, target)
 
     # Auto-enrich unless --no-enrich or SUPLEX_NO_ENRICH env.
     if enrich and not os.environ.get("SUPLEX_NO_ENRICH"):
@@ -387,9 +390,7 @@ def scrape_linkedin(
         max_results=max_results,
         extra=extra,
     )
-    job_id = os.environ.get("SUPLEX_JOB_ID")
-    leads = asyncio.run(coord.run([target], job_id=job_id))
-    click.echo(json.dumps({"leads": len(leads)}, indent=2))
+    _run_scrape(coord, target)
 
     if enrich and not os.environ.get("SUPLEX_NO_ENRICH"):
         _auto_enrich(store, token)
@@ -436,6 +437,23 @@ def plan(domain: str, preferences: str, execute: bool, apify_token: str | None) 
             click.echo(json.dumps({"leads_scraped": len(leads)}, indent=2))
 
     asyncio.run(_run())
+
+
+def _run_scrape(coord: ScrapeCoordinator, target: ScrapeTarget) -> None:
+    """Run one scrape target in the foreground and print a JSON summary."""
+    from suplex.scraper.coordinator import ScrapeConfigError
+
+    job_id = os.environ.get("SUPLEX_JOB_ID")
+    try:
+        leads = asyncio.run(coord.run([target], job_id=job_id))
+    except ScrapeConfigError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    summary: dict = {"leads": len(leads)}
+    if coord.failed_targets:
+        summary["failed_targets"] = len(coord.failed_targets)
+        summary["first_error"] = next(iter(coord.failed_targets.values()))
+    click.echo(json.dumps(summary, indent=2))
 
 
 def _auto_enrich(store: LeadStore, apify_token: str | None) -> None:

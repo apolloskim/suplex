@@ -51,6 +51,10 @@ EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
 REVIEW_COUNT_RE = re.compile(r"([\d,]+)\s*review", re.IGNORECASE)
 
 
+class DailyLimitReached(RuntimeError):
+    """The per-process Playwright visit limit is used up; the tile was not scraped."""
+
+
 class GMapsScraper:
     """Scrape Google Maps search results via Playwright.
 
@@ -72,21 +76,28 @@ class GMapsScraper:
             GMapsScraper._daily_date = today
             GMapsScraper._daily_count = 0
         if self._daily_count >= DAILY_LIMIT:
-            logger.warning("Daily Playwright limit reached (%d). Skipping.", DAILY_LIMIT)
-            return []
+            # Raise instead of returning []: an empty result would mark this tile
+            # as done, and `suplex resume -s apify` would then skip it for good.
+            raise DailyLimitReached(
+                f"Playwright daily limit reached ({DAILY_LIMIT} places). "
+                "Resume later, or resume with `-s apify`."
+            )
         query = target.query
         max_results = target.max_results
 
         # Use coordinate-based URL if tile has lat/lng (more precise geographic targeting).
         lat = target.extra.get("tile_lat")
         lng = target.extra.get("tile_lng")
-        if lat and lng:
-            zoom = target.extra.get("tile_zoom", DEFAULT_ZOOM)
-            search_query = quote_plus(query)
-        elif target.location:
-            query = f"{query} in {target.location}"
-            lat = lng = zoom = None
-            search_query = None
+        has_coords = lat is not None and lng is not None  # 0.0 is a valid coordinate.
+        if has_coords:
+            url = MAPS_COORD_URL.format(
+                query=quote_plus(query), lat=lat, lng=lng,
+                zoom=target.extra.get("tile_zoom", DEFAULT_ZOOM),
+            )
+        else:
+            if target.location:
+                query = f"{query} in {target.location}"
+            url = MAPS_URL.format(query=quote_plus(query))
 
         logger.info("Google Maps Playwright: %s (max %d)", query, max_results)
 
@@ -109,12 +120,6 @@ class GMapsScraper:
             page = await context.new_page()
 
             # Navigate to Google Maps search.
-            if lat and lng:
-                url = MAPS_COORD_URL.format(
-                    query=search_query, lat=lat, lng=lng, zoom=zoom,
-                )
-            else:
-                url = MAPS_URL.format(query=quote_plus(query))
             await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
             await page.wait_for_timeout(random.randint(2000, 4000))
 

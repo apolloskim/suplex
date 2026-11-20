@@ -363,7 +363,7 @@ def advance_batch(batch_id: str, max_parallel: int = 3) -> dict:
             newly_launched.append(child["id"])
 
     # Check if batch is complete.
-    terminal = status["done"] + status["failed"] + status.get("stopped", 0)
+    terminal = _terminal_count(status)
     if terminal == status["total_jobs"]:
         final_status = _final_batch_status(status)
         store.finish_job(batch_id, final_status)
@@ -729,7 +729,7 @@ def _watchdog_loop(batch_id: str, max_parallel: int, poll_interval: int = 15) ->
             print(f"Batch {batch_id} stopped")
             break
 
-        terminal = status["done"] + status["failed"] + status.get("stopped", 0)
+        terminal = _terminal_count(status)
         total = status["total_jobs"]
 
         # Batch complete?
@@ -738,7 +738,8 @@ def _watchdog_loop(batch_id: str, max_parallel: int, poll_interval: int = 15) ->
             store.finish_job(batch_id, final_status)
             print(
                 f"Batch {batch_id} complete: {final_status} "
-                f"({status['done']} done, {status['failed']} failed, {status.get('stopped', 0)} stopped)"
+                f"({status['done']} done, {status.get('done_with_errors', 0)} with errors, "
+                f"{status['failed']} failed, {status.get('stopped', 0)} stopped)"
             )
             break
 
@@ -761,10 +762,18 @@ def _update_job_meta(store: LeadStore, job_id: str, meta: dict) -> None:
     store.update_job_meta(job_id, meta)
 
 
+def _terminal_count(status: dict) -> int:
+    """How many children of a batch have finished, in any way."""
+    return (
+        status["done"] + status.get("done_with_errors", 0)
+        + status["failed"] + status.get("stopped", 0)
+    )
+
+
 def _final_batch_status(status: dict) -> str:
     if status.get("stopped", 0) > 0:
         return "stopped"
-    if status["failed"] > 0:
+    if status["failed"] > 0 or status.get("done_with_errors", 0) > 0:
         return "done_with_errors"
     return "done"
 
@@ -955,6 +964,7 @@ def _stop_batch_job(store: LeadStore, job: dict, *, force: bool) -> dict:
         "pending_child_ids": pending_children_stopped,
         "summary": {
             "done": refreshed["done"],
+            "done_with_errors": refreshed.get("done_with_errors", 0),
             "failed": refreshed["failed"],
             "stopped": refreshed.get("stopped", 0),
             "pending": refreshed["pending"],

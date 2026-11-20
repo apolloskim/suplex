@@ -141,8 +141,9 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="scrape_google_maps",
             description=(
-                "Scrape Google Maps for business leads via Apify. "
-                "Returns business name, email, phone, address, website."
+                "Scrape Google Maps for business leads in the foreground with the local "
+                "Playwright scraper (free). Returns business name, phone, address, website. "
+                "For the paid Apify scraper or large areas, use run_background_job."
             ),
             inputSchema={
                 "type": "object",
