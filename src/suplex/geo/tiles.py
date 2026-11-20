@@ -1,18 +1,3 @@
-"""Tile planner — resolves geographic scope into concrete scrape targets.
-
-Google Maps: tiles by city coordinates (viewport-based search)
-LinkedIn: tiles by unique autocomplete strings (looked up from geo_map table)
-
-Both support any granularity:
-  "Austin, TX"                → 1-2 autocomplete tiles
-  "Texas"                     → all TX autocomplete strings
-  "US"                        → all US autocomplete strings
-  "Japan"                     → all JP autocomplete strings
-  "London, UK"                → UK London only
-  "London, Kentucky"          → KY London only
-  "North Holland, Netherlands" → North Holland only
-"""
-
 from __future__ import annotations
 
 import logging
@@ -25,7 +10,6 @@ from suplex.store.db import LeadStore
 
 logger = logging.getLogger(__name__)
 
-# US state name → code mapping.
 STATE_CODES: dict[str, str] = {
     "alabama": "AL", "alaska": "AK", "arizona": "AZ", "arkansas": "AR",
     "california": "CA", "colorado": "CO", "connecticut": "CT", "delaware": "DE",
@@ -41,11 +25,9 @@ STATE_CODES: dict[str, str] = {
     "vermont": "VT", "virginia": "VA", "washington": "WA", "west virginia": "WV",
     "wisconsin": "WI", "wyoming": "WY", "district of columbia": "DC",
 }
-# Code → lowercase full name ("TX" → "texas"). Built before the codes are added as keys.
 STATE_NAMES: dict[str, str] = {code: name for name, code in STATE_CODES.items()}
 STATE_CODES.update({v.lower(): v for v in STATE_CODES.values()})
 
-# Common country aliases.
 _COUNTRY_ALIASES: dict[str, str] = {
     "usa": "US", "united states of america": "US", "nationwide": "US", "national": "US",
     "uk": "GB", "england": "GB", "britain": "GB", "great britain": "GB",
@@ -78,11 +60,6 @@ def _normalize_accent(s: str) -> str:
     )
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
-
 def resolve_tiles(
     query: str,
     location: str,
@@ -91,7 +68,6 @@ def resolve_tiles(
     source: LeadSource = LeadSource.GOOGLE_MAPS,
     store: LeadStore | None = None,
 ) -> list[ScrapeTarget]:
-    """Resolve a query + location into concrete scrape targets."""
     store = store or LeadStore()
     ensure_cities_seeded(store)
 
@@ -106,7 +82,6 @@ def filter_tiles(
     only: list[str] | None = None,
     exclude: list[str] | None = None,
 ) -> list[ScrapeTarget]:
-    """Apply the ``--only`` / ``--exclude`` region filters to a list of tiles."""
     if only:
         tiles = [t for t in tiles if tile_matches(t, only)]
     if exclude:
@@ -115,13 +90,6 @@ def filter_tiles(
 
 
 def tile_matches(tile: ScrapeTarget, filters: list[str]) -> bool:
-    """Does a tile fall inside any of the given regions?
-
-    A filter can be a US state code or name (TX, Texas), a country code (JP),
-    or a region / city name (Tokyo, "North Holland"). Matching is accent- and
-    case-insensitive and always on whole words: "IN" must select Indiana, not
-    every location that happens to contain the letters "in".
-    """
     state = _normalize_accent(tile.extra.get("tile_state", ""))
     city = _normalize_accent(tile.extra.get("tile_city", ""))
     country = tile.extra.get("tile_country", "").upper()
@@ -140,9 +108,6 @@ def tile_matches(tile: ScrapeTarget, filters: list[str]) -> bool:
         if state_code and _in_us_state(state_code, state, country, location_parts):
             return True
         if state_code and (len(wanted) == 2 or (state and country in ("US", ""))):
-            # For a US tile, a state filter is decided by the state alone. Falling
-            # through to free-text matching would let "OR" select Oregon, Illinois
-            # and "IN" select anything containing the letters "in".
             continue
 
         if state and (_has_phrase(state, wanted) or _has_phrase(wanted, state)):
@@ -156,13 +121,6 @@ def tile_matches(tile: ScrapeTarget, filters: list[str]) -> bool:
 
 
 def _in_us_state(state_code: str, tile_state: str, tile_country: str, location_parts: list[str]) -> bool:
-    """Is a tile inside the given US state?
-
-    Google Maps tiles carry the state code. LinkedIn tiles only have text such
-    as "Austin, Texas, United States", "Texas, United States" or "Austin, Texas
-    Metropolitan Area", so the state is looked for by name — skipping the
-    leading city part, because "Oregon, Illinois, United States" is not Oregon.
-    """
     code, name = state_code.lower(), STATE_NAMES[state_code]
     if tile_state:
         return tile_state == code and tile_country in ("US", "")
@@ -173,15 +131,9 @@ def _in_us_state(state_code: str, tile_state: str, tile_country: str, location_p
 
 
 def _has_phrase(text: str, phrase: str) -> bool:
-    """True if ``phrase`` occurs in ``text`` on word boundaries."""
     if not text or not phrase:
         return False
     return re.search(rf"(?<![a-z0-9]){re.escape(phrase)}(?![a-z0-9])", text) is not None
-
-
-# ---------------------------------------------------------------------------
-# LinkedIn tiles — lookup from geo_map
-# ---------------------------------------------------------------------------
 
 
 def _linkedin_tiles(
@@ -190,15 +142,8 @@ def _linkedin_tiles(
     max_results: int,
     store: LeadStore,
 ) -> list[ScrapeTarget]:
-    """Generate LinkedIn tiles by looking up the location in the geo_map.
-
-    The geo_map was built from autocomplete data — every geographic entity
-    (country, region, city, metro) is a lookup key that maps to the exact
-    autocomplete strings LinkedIn accepts.
-    """
     location_lower = location.strip().lower()
 
-    # Look up in geo map — try both accented and stripped forms, take the larger set.
     autocompletes = store.get_linkedin_geo(location_lower)
     normalized = _normalize_accent(location_lower)
     if normalized != location_lower:
@@ -207,7 +152,6 @@ def _linkedin_tiles(
             autocompletes = alt
 
     if not autocompletes:
-        # Passthrough — the location as-is. The actor will attempt its own resolution.
         logger.debug("No geo map entry for '%s' — passing through", location)
         return [ScrapeTarget(
             source=LeadSource.LINKEDIN,
@@ -216,7 +160,6 @@ def _linkedin_tiles(
             max_results=max_results,
         )]
 
-    # Deduplicate autocomplete strings.
     unique = list(dict.fromkeys(autocompletes))
 
     targets = [
@@ -234,11 +177,6 @@ def _linkedin_tiles(
     return targets
 
 
-# ---------------------------------------------------------------------------
-# Google Maps tiles — city coordinates
-# ---------------------------------------------------------------------------
-
-
 def _gmaps_tiles_resolve(
     query: str,
     location: str,
@@ -246,7 +184,6 @@ def _gmaps_tiles_resolve(
     source: LeadSource,
     store: LeadStore,
 ) -> list[ScrapeTarget]:
-    """Resolve Google Maps tiles via city database."""
     location_lower = location.strip().lower()
     cities = _resolve_cities_for_gmaps(location_lower, store)
 
@@ -279,20 +216,14 @@ def _gmaps_tiles_resolve(
 
 
 def _resolve_cities_for_gmaps(location_lower: str, store: LeadStore) -> list[dict] | None:
-    """Resolve a location to city list for Google Maps tiling."""
     country_codes = _get_country_codes(store)
 
-    # Parse "location, qualifier".
     parts = [p.strip() for p in location_lower.split(",")]
     location_part = parts[0]
     qualifier = parts[1] if len(parts) > 1 else None
 
     target = _normalize_accent(location_part)
 
-    # "<city>, <qualifier>": the qualifier is a US state, a country, or both
-    # ("CA" is California and Canada, "Georgia" is a state and a country).
-    # Try the state first, then the country. Never widen beyond the qualifier:
-    # "Springfield, TX" must not turn into every Springfield in the US.
     if qualifier:
         scope_state = STATE_CODES.get(qualifier)
         scope_country = country_codes.get(qualifier)
@@ -314,17 +245,14 @@ def _resolve_cities_for_gmaps(location_lower: str, store: LeadStore) -> list[dic
         if scope_state or scope_country:
             return None
 
-    # US state?
     state_code = STATE_CODES.get(location_part)
     if state_code and not qualifier:
         return store.get_cities(state_code, country_code="US") or None
 
-    # Country?
     country_code = country_codes.get(location_part)
     if country_code and not qualifier:
         return store.get_cities_by_country(country_code) or None
 
-    # A region name in any country ("Bavaria", "North Holland").
     for country in store.get_all_countries():
         cc = country["country_code"]
         for region in store.get_regions(cc):

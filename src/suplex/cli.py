@@ -1,5 +1,3 @@
-"""CLI entry point — agents and humans call this."""
-
 from __future__ import annotations
 
 import asyncio
@@ -34,25 +32,17 @@ def cli(ctx: click.Context) -> None:
     skill_path = Path.home() / ".claude" / "skills" / "suplex" / "SKILL.md"
     is_configured = config_path.exists() and skill_path.exists()
 
-    # If called with no subcommand (just `suplex`), show getting started.
     if ctx.invoked_subcommand is None:
         if not is_configured:
             click.echo("Welcome to Suplex! Get started:\n", err=True)
             click.echo("  suplex setup    Install skill, MCP server, and configure API keys", err=True)
             click.echo("  suplex doctor   Check service health\n", err=True)
         else:
-            # Show help if already configured.
             click.echo(ctx.get_help())
         return
 
-    # First-run nudge on any other command.
     if not is_configured and ctx.invoked_subcommand not in ("setup", "serve", "doctor"):
         click.echo("Suplex not fully configured. Run: suplex setup", err=True)
-
-
-# ---------------------------------------------------------------------------
-# profile (sender identity)
-# ---------------------------------------------------------------------------
 
 
 @cli.command()
@@ -73,11 +63,6 @@ def profile(url: str) -> None:
     asyncio.run(_run())
 
 
-# ---------------------------------------------------------------------------
-# setup & doctor
-# ---------------------------------------------------------------------------
-
-
 @cli.command()
 def setup() -> None:
     """Full setup — install skill, register MCP server, configure API keys."""
@@ -88,11 +73,9 @@ def setup() -> None:
     from suplex.config import Config
     from suplex.setup import SERVICES, validate_key
 
-    # Step 1: Install skill files.
     click.echo("Installing suplex skill...", err=True)
     skill_src = Path(__file__).parent / "skills" / "suplex"
     if skill_src.exists():
-        # Install to ~/.claude/skills/ (Claude Code) and ~/.agents/skills/ (universal)
         for base in (Path.home() / ".claude" / "skills", Path.home() / ".agents" / "skills"):
             dst = base / "suplex"
             dst.mkdir(parents=True, exist_ok=True)
@@ -103,7 +86,6 @@ def setup() -> None:
     else:
         click.echo("  Skill files not found in package — skipping.", err=True)
 
-    # Step 2: Register MCP server (if claude CLI available).
     click.echo("Registering MCP server...", err=True)
     suplex_bin = shutil.which("suplex")
     claude_bin = shutil.which("claude")
@@ -129,7 +111,6 @@ def setup() -> None:
         else:
             click.echo("  suplex not found on PATH — install globally first: uv tool install suplex-ai", err=True)
 
-    # Step 3: Install Playwright browsers.
     click.echo("Checking Playwright browsers...", err=True)
     playwright_cmd = [sys.executable, "-m", "playwright", "install", "chromium"]
     try:
@@ -141,7 +122,6 @@ def setup() -> None:
     except (OSError, subprocess.TimeoutExpired):
         click.echo(f"  Run: {' '.join(playwright_cmd)}", err=True)
 
-    # Step 4: Configure API keys.
     click.echo("\nConfiguring API keys...", err=True)
     config = Config.load()
 
@@ -181,7 +161,6 @@ def setup() -> None:
     config.save()
     click.echo("\nConfig saved to ~/.config/suplex/config.toml", err=True)
 
-    # Offer to set up Reacher Docker if no Reacher key.
     if not config.reacher_api_key:
         click.echo("\n  No Reacher API key — checking Docker for free self-hosted verification...", err=True)
         _check_reacher_docker()
@@ -218,7 +197,6 @@ def doctor() -> None:
 
 
 def _check_reacher_docker() -> None:
-    """Check if Reacher Docker container is running, offer to start it."""
     import shutil
     import subprocess
 
@@ -228,14 +206,12 @@ def _check_reacher_docker() -> None:
         click.echo("  Then run: suplex doctor", err=True)
         return
 
-    # Check if container exists.
     result = subprocess.run(
         ["docker", "inspect", "suplex-reacher"],
         capture_output=True,
     )
 
     if result.returncode == 0:
-        # Check if running.
         result = subprocess.run(
             ["docker", "inspect", "-f", "{{.State.Running}}", "suplex-reacher"],
             capture_output=True,
@@ -260,11 +236,6 @@ def _check_reacher_docker() -> None:
                  "reacherhq/backend:latest"],
             )
             click.echo("  Reacher running at localhost:8080", err=True)
-
-
-# ---------------------------------------------------------------------------
-# scrape
-# ---------------------------------------------------------------------------
 
 
 @cli.group()
@@ -304,7 +275,6 @@ def scrape_maps(query: str, location: str | None, max_results: int, scraper: str
     )
     _run_scrape(coord, target)
 
-    # Auto-enrich unless --no-enrich or SUPLEX_NO_ENRICH env.
     if enrich and not os.environ.get("SUPLEX_NO_ENRICH"):
         _auto_enrich(store, token)
 
@@ -413,11 +383,6 @@ def scrape_website(url: str) -> None:
     click.echo(json.dumps([lead.model_dump() for lead in leads], default=str, indent=2))
 
 
-# ---------------------------------------------------------------------------
-# plan
-# ---------------------------------------------------------------------------
-
-
 @cli.command()
 @click.argument("domain")
 @click.option("--preferences", "-p", default="", help="Target preferences")
@@ -452,7 +417,6 @@ def plan(domain: str, preferences: str, execute: bool, apify_token: str | None) 
 
 
 def _run_scrape(coord: ScrapeCoordinator, target: ScrapeTarget) -> None:
-    """Run one scrape target in the foreground and print a JSON summary."""
     from suplex.scraper.coordinator import ScrapeConfigError
 
     job_id = os.environ.get("SUPLEX_JOB_ID")
@@ -469,7 +433,6 @@ def _run_scrape(coord: ScrapeCoordinator, target: ScrapeTarget) -> None:
 
 
 def _auto_enrich(store: LeadStore, apify_token: str | None) -> None:
-    """Run enrichment on unenriched leads after scraping."""
     from suplex.enrich.pipeline import EnrichmentPipeline
 
     unenriched = store.get_unenriched(limit=1)
@@ -482,11 +445,6 @@ def _auto_enrich(store: LeadStore, apify_token: str | None) -> None:
     enrich_job_id = f"{job_id}_enrich" if job_id else None
     stats = asyncio.run(pipeline.run(limit=9999, job_id=enrich_job_id))
     click.echo(json.dumps(stats, default=str, indent=2))
-
-
-# ---------------------------------------------------------------------------
-# enrich
-# ---------------------------------------------------------------------------
 
 
 @cli.command()
@@ -512,11 +470,6 @@ def enrich(limit: int, linkedin_posts: int, apify_token: str | None) -> None:
     asyncio.run(_run())
 
 
-# ---------------------------------------------------------------------------
-# verify
-# ---------------------------------------------------------------------------
-
-
 @cli.command()
 @click.option("--limit", "-n", default=50, help="Max emails to verify")
 def verify(limit: int) -> None:
@@ -539,11 +492,6 @@ def verify(limit: int) -> None:
         click.echo(json.dumps({"verified": len(unverified)}, indent=2))
 
     asyncio.run(_run())
-
-
-# ---------------------------------------------------------------------------
-# leads
-# ---------------------------------------------------------------------------
 
 
 @cli.command()
@@ -594,7 +542,6 @@ def export(source: str | None, status: str | None, enriched: bool, output: str) 
         click.echo("No leads to export.", err=True)
         return
 
-    # Build CSV with flat columns for the most useful fields.
     fieldnames = [
         "name", "email", "verification_status", "company", "title", "phone",
         "location", "website", "source", "linkedin_url", "google_maps_url",
@@ -634,7 +581,6 @@ def regions(query: str | None, search: str | None) -> None:
     store = LeadStore()
 
     if search:
-        # Search cities table for matching city/region/country.
         import unicodedata
         term = "".join(
             c for c in unicodedata.normalize("NFD", search.lower()) if unicodedata.category(c) != "Mn"
@@ -655,7 +601,6 @@ def regions(query: str | None, search: str | None) -> None:
         for r in rows:
             click.echo(f"  {r['name']:25s} region={r['state']:25s} country={r['country_name']} ({r['country_code']})", err=True)
 
-        # Also check LinkedIn geo map.
         li_results = store.get_linkedin_geo(search.lower())
         if li_results:
             click.echo(f"\nLinkedIn autocompletes for '{search}':", err=True)
@@ -663,12 +608,10 @@ def regions(query: str | None, search: str | None) -> None:
                 click.echo(f"  {li}", err=True)
 
     elif query:
-        # List regions in a country.
         from suplex.geo.tiles import _get_country_codes
         codes = _get_country_codes(store)
         cc = codes.get(query.lower())
         if not cc:
-            # Maybe it's a direct country code.
             cc = query.upper() if len(query) <= 3 else None
 
         if not cc:
@@ -703,11 +646,6 @@ def budget() -> None:
     click.echo(f"  Active runs: {result['active_runs']}", err=True)
     click.echo(f"  Cycle: {result['cycle_start'][:10]} to {result['cycle_end'][:10]}", err=True)
     click.echo(json.dumps(result, indent=2))
-
-
-# ---------------------------------------------------------------------------
-# run (background jobs)
-# ---------------------------------------------------------------------------
 
 
 @cli.group()
@@ -1011,22 +949,12 @@ def stop_cmd(job_id: str, force: bool) -> None:
     click.echo(json.dumps(result, indent=2))
 
 
-# ---------------------------------------------------------------------------
-# serve (MCP server)
-# ---------------------------------------------------------------------------
-
-
 @cli.command()
 def serve() -> None:
     """Start the MCP server (stdio transport) for AI agents."""
     from suplex.mcp_server import main as mcp_main
 
     mcp_main()
-
-
-# ---------------------------------------------------------------------------
-# Outreach: playbook, mailbox, campaign, send
-# ---------------------------------------------------------------------------
 
 
 @cli.group()

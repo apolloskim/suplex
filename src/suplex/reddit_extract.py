@@ -163,7 +163,7 @@ def build_reddit_search_url(subreddit: str, query: str, time_window: str) -> str
 
 
 def build_duckduckgo_search_url(subreddit: str, query: str, time_window: str) -> str:
-    del time_window  # DDG date controls are UI-driven, so we keep the query broad here.
+    del time_window
     search = f'site:reddit.com/r/{subreddit}/comments "{query}"'
     return f"https://duckduckgo.com/?q={quote_plus(search)}&ia=web"
 

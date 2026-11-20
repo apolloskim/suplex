@@ -239,19 +239,9 @@ class LeadStore:
             conn.close()
 
     def insert_lead(self, lead: Lead) -> int:
-        """Insert a lead with deduplication.
-
-        Dedup keys (checked in order):
-        1. linkedin_url (for LinkedIn leads)
-        2. google_maps_url (for Google Maps leads)
-        3. email + source (for any source with email)
-        4. name + location + source (fallback)
-        """
         with self._conn() as conn:
-            # Check for existing lead.
             existing_id = self._find_duplicate(conn, lead)
             if existing_id:
-                # Update existing lead with new data (merge).
                 conn.execute(
                     """UPDATE leads SET
                         name=COALESCE(?, name), email=COALESCE(?, email),
@@ -290,8 +280,6 @@ class LeadStore:
 
     @staticmethod
     def _find_duplicate(conn: sqlite3.Connection, lead: Lead) -> int | None:
-        """Find an existing lead that matches this one."""
-        # 1. LinkedIn URL (strongest identifier).
         if lead.linkedin_url:
             row = conn.execute(
                 "SELECT id FROM leads WHERE linkedin_url = ?", (lead.linkedin_url,)
@@ -299,7 +287,6 @@ class LeadStore:
             if row:
                 return row["id"]
 
-        # 2. Google Maps URL.
         if lead.google_maps_url:
             row = conn.execute(
                 "SELECT id FROM leads WHERE google_maps_url = ?", (lead.google_maps_url,)
@@ -307,7 +294,6 @@ class LeadStore:
             if row:
                 return row["id"]
 
-        # 3. Email + source.
         if lead.email:
             row = conn.execute(
                 "SELECT id FROM leads WHERE email = ? AND source = ?",
@@ -316,7 +302,6 @@ class LeadStore:
             if row:
                 return row["id"]
 
-        # 4. Name + location + source (fuzzy match for businesses).
         if lead.name and lead.location:
             row = conn.execute(
                 "SELECT id FROM leads WHERE name = ? AND location = ? AND source = ?",
@@ -427,9 +412,6 @@ class LeadStore:
             row = conn.execute(f"SELECT COUNT(*) FROM leads {where}", params).fetchone()
             return row[0]
 
-    # ------------------------------------------------------------------
-    # Sender profile
-    # ------------------------------------------------------------------
 
     def save_profile(self, website: str, data: dict) -> None:
         now = utcnow().isoformat()
@@ -456,9 +438,6 @@ class LeadStore:
                 }
         return None
 
-    # ------------------------------------------------------------------
-    # Cities (geo tile planning)
-    # ------------------------------------------------------------------
 
     def cities_seeded(self) -> bool:
         with self._conn() as conn:
@@ -466,7 +445,6 @@ class LeadStore:
             return row[0] > 0
 
     def seed_cities(self, cities: list[dict]) -> int:
-        """Bulk insert cities. Each dict: {name, state, lat, lng, pop, country_code?, country_name?}."""
         with self._conn() as conn:
             conn.executemany(
                 """
@@ -485,7 +463,6 @@ class LeadStore:
         min_population: int = 0,
         limit: int = 9999,
     ) -> list[dict]:
-        """Get top cities in a state/region by population."""
         with self._conn() as conn:
             rows = conn.execute(
                 """
@@ -506,7 +483,6 @@ class LeadStore:
         min_population: int = 0,
         limit: int = 9999,
     ) -> list[dict]:
-        """Get all cities in a country by population."""
         with self._conn() as conn:
             rows = conn.execute(
                 """
@@ -521,7 +497,6 @@ class LeadStore:
             return [dict(row) for row in rows]
 
     def get_regions(self, country_code: str = "US") -> list[str]:
-        """Get all unique state/region names for a country."""
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT DISTINCT state FROM cities WHERE country_code = ? ORDER BY state",
@@ -530,7 +505,6 @@ class LeadStore:
             return [row["state"] for row in rows]
 
     def get_all_countries(self) -> list[dict]:
-        """Get all countries with city counts."""
         with self._conn() as conn:
             rows = conn.execute(
                 """
@@ -541,9 +515,6 @@ class LeadStore:
             ).fetchall()
             return [dict(row) for row in rows]
 
-    # ------------------------------------------------------------------
-    # LinkedIn locations
-    # ------------------------------------------------------------------
 
     def linkedin_locations_seeded(self) -> bool:
         with self._conn() as conn:
@@ -551,7 +522,6 @@ class LeadStore:
             return row[0] > 0
 
     def seed_linkedin_locations(self, records: list[dict]) -> int:
-        """Bulk insert. Each dict: {query, suggestions (list[str]), scraped_at}."""
         with self._conn() as conn:
             conn.executemany(
                 """
@@ -563,7 +533,6 @@ class LeadStore:
             return len(records)
 
     def get_linkedin_location(self, query: str) -> list[str] | None:
-        """Get cached LinkedIn autocomplete suggestions for a query. None if not cached."""
         with self._conn() as conn:
             row = conn.execute(
                 "SELECT suggestions FROM linkedin_locations WHERE query = ?",
@@ -574,7 +543,6 @@ class LeadStore:
         return None
 
     def save_linkedin_location(self, query: str, suggestions: list[str]) -> None:
-        """Cache a single LinkedIn location autocomplete result."""
         with self._conn() as conn:
             conn.execute(
                 """
@@ -584,13 +552,6 @@ class LeadStore:
                 (query, json.dumps(suggestions), utcnow().isoformat()),
             )
 
-    # ------------------------------------------------------------------
-    # LinkedIn geo map
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Jobs
-    # ------------------------------------------------------------------
 
     def create_job(self, job_id: str, job_type: str, total: int, meta: dict | None = None) -> None:
         with self._conn() as conn:
@@ -654,7 +615,6 @@ class LeadStore:
             return results
 
     def create_batch_job(self, batch_id: str, child_specs: list[dict], meta: dict | None = None) -> None:
-        """Create a parent batch job with pending child jobs."""
         now = utcnow().isoformat()
         with self._conn() as conn:
             conn.execute(
@@ -668,7 +628,6 @@ class LeadStore:
                 )
 
     def get_batch_status(self, batch_id: str) -> dict | None:
-        """Get aggregated status of a batch and its children."""
         with self._conn() as conn:
             parent = conn.execute("SELECT * FROM jobs WHERE id = ?", (batch_id,)).fetchone()
             if not parent:
@@ -698,7 +657,6 @@ class LeadStore:
         }
 
     def get_pending_children(self, batch_id: str, limit: int = 1) -> list[dict]:
-        """Get next pending child jobs to launch."""
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT * FROM jobs WHERE parent_id = ? AND status = 'pending' LIMIT ?",
@@ -714,9 +672,6 @@ class LeadStore:
             ).fetchone()
             return row[0]
 
-    # ------------------------------------------------------------------
-    # Item tasks (resumable processing)
-    # ------------------------------------------------------------------
 
     def seed_item_tasks(self, job_id: str, item_keys: list[str]) -> int:
         with self._conn() as conn:
@@ -727,7 +682,6 @@ class LeadStore:
             return len(item_keys)
 
     def claim_item_task(self, job_id: str) -> str | None:
-        """Claim the next pending item. Returns item_key or None."""
         with self._conn() as conn:
             row = conn.execute(
                 "SELECT item_key FROM item_tasks WHERE job_id = ? AND status = 'pending' LIMIT 1",
@@ -757,7 +711,6 @@ class LeadStore:
             )
 
     def reset_stale_tasks(self, job_id: str, timeout_seconds: int = 300) -> int:
-        """Reset items stuck in 'processing' longer than timeout back to 'pending'."""
         cutoff = (utcnow() - timedelta(seconds=timeout_seconds)).isoformat()
         with self._conn() as conn:
             cur = conn.execute(
@@ -776,7 +729,6 @@ class LeadStore:
             return cur.rowcount
 
     def reset_processing_tasks(self, job_id: str) -> int:
-        """Reset in-flight items immediately after a manual stop."""
         with self._conn() as conn:
             cur = conn.execute(
                 """UPDATE item_tasks
@@ -802,9 +754,6 @@ class LeadStore:
             ).fetchone()
             return row is not None and row["status"] == "done"
 
-    # ------------------------------------------------------------------
-    # Reddit post watching / revisit / hydration
-    # ------------------------------------------------------------------
 
     def upsert_reddit_post(
         self,
@@ -1099,7 +1048,6 @@ class LeadStore:
         data["post_payload_json"] = json.loads(data["post_payload_json"]) if data["post_payload_json"] else {}
         return data
 
-    # ------------------------------------------------------------------
 
     def linkedin_geo_map_seeded(self) -> bool:
         with self._conn() as conn:
@@ -1107,7 +1055,6 @@ class LeadStore:
             return row[0] > 0
 
     def seed_linkedin_geo_map(self, rows: list[tuple[str, str]]) -> int:
-        """Bulk insert (lookup_key, autocomplete) pairs."""
         with self._conn() as conn:
             conn.executemany(
                 "INSERT OR IGNORE INTO linkedin_geo_map (lookup_key, autocomplete) VALUES (?, ?)",
@@ -1116,7 +1063,6 @@ class LeadStore:
             return len(rows)
 
     def get_linkedin_geo(self, lookup_key: str) -> list[str]:
-        """Get all autocomplete strings for a lookup key."""
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT autocomplete FROM linkedin_geo_map WHERE lookup_key = ?",
@@ -1124,7 +1070,6 @@ class LeadStore:
             ).fetchall()
             return [row["autocomplete"] for row in rows]
 
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _row_to_lead(row: sqlite3.Row) -> Lead:
@@ -1148,9 +1093,6 @@ class LeadStore:
             enrichment_data=json.loads(row["enrichment_data"]) if row["enrichment_data"] else {},
         )
 
-    # ------------------------------------------------------------------
-    # Outreach: mailboxes, campaigns, sends, suppression
-    # ------------------------------------------------------------------
 
     def add_mailbox(self, mailbox_id: str, email: str, display_name: str,
                     gws_config_dir: str, daily_limit: int = 10) -> None:
@@ -1310,7 +1252,6 @@ class LeadStore:
             return [dict(r) for r in rows]
 
     def get_outreach_due_followups(self, campaign_id: str) -> list[dict]:
-        """Get leads due for follow-up: sent, no reply, past delay window."""
         campaign = self.get_campaign(campaign_id)
         if not campaign:
             return []
@@ -1318,7 +1259,6 @@ class LeadStore:
         max_step = max(s["step"] for s in cadence) if cadence else 1
 
         with self._conn() as conn:
-            # Find latest outreach per lead in this campaign.
             rows = conn.execute(
                 "SELECT o.*, l.name as lead_name, l.email as lead_email, l.company as lead_company "
                 "FROM outreach o JOIN leads l ON o.lead_id = l.id "
@@ -1337,7 +1277,6 @@ class LeadStore:
             d = dict(row)
             current_step = d["step"]
             next_step = current_step + 1
-            # Find delay for next step.
             delay = next(
                 (s["delay_days"] for s in cadence if s["step"] == next_step), None
             )
@@ -1362,7 +1301,6 @@ class LeadStore:
             return stats
 
     def get_sent_threads(self, mailbox_id: str) -> list[dict]:
-        """Get all sent outreach with thread IDs for reply checking."""
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT o.id, o.lead_id, o.gmail_thread_id, o.gmail_message_id, "
@@ -1389,14 +1327,12 @@ class LeadStore:
             )
 
     def get_eligible_leads(self, campaign_id: str, limit: int = 20) -> list[dict]:
-        """Get leads eligible for outreach: valid email, not suppressed, not already in this campaign."""
         campaign = self.get_campaign(campaign_id)
         if not campaign:
             return []
         filters = campaign["filter_json"]
 
         with self._conn() as conn:
-            # Base: valid email, not suppressed, not already contacted in this campaign.
             q = """
                 SELECT l.* FROM leads l
                 WHERE l.email IS NOT NULL
@@ -1406,7 +1342,6 @@ class LeadStore:
             """
             params: list = [campaign_id]
 
-            # Apply optional filters.
             if filters.get("source"):
                 q += " AND l.source = ?"
                 params.append(filters["source"])

@@ -1,5 +1,3 @@
-"""AI strategist — decides what to scrape based on user's domain and preferences."""
-
 from __future__ import annotations
 
 import json
@@ -54,8 +52,6 @@ class StrategistError(RuntimeError):
 
 
 class Strategist:
-    """Uses Claude to generate scrape plans from business context."""
-
     def __init__(self, api_key: str | None = None, model: str = DEFAULT_MODEL) -> None:
         self.client = anthropic.AsyncAnthropic(
             api_key=api_key or os.environ.get("ANTHROPIC_API_KEY", ""),
@@ -69,13 +65,6 @@ class Strategist:
         preferences: str = "",
         max_targets: int = 10,
     ) -> ScrapePlan:
-        """Generate a scrape plan based on the user's domain and preferences.
-
-        Args:
-            domain: The user's business domain/description (e.g. "B2B SaaS for restaurants")
-            preferences: Additional preferences (location, company size, titles, etc.)
-            max_targets: Maximum number of scrape targets to generate.
-        """
         user_message = f"""\
 My business: {domain}
 

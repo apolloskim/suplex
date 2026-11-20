@@ -1,11 +1,3 @@
-"""Sender profile — scraped from the user's own website during onboarding.
-
-Stored in SQLite (sender_profile table). Used by:
-- AI strategist: to understand who the user is and find matching leads
-- Email generation: to write emails that accurately represent the sender
-- MCP: exposed via setup_status, set_profile, get_profile tools
-"""
-
 from __future__ import annotations
 
 import logging
@@ -19,8 +11,6 @@ logger = logging.getLogger(__name__)
 
 
 class SenderProfile:
-    """The user's business identity, scraped from their website."""
-
     def __init__(self, data: dict[str, Any] | None = None) -> None:
         self.data = data or {}
 
@@ -45,7 +35,6 @@ class SenderProfile:
         return bool(self.data and self.website)
 
     def summary(self) -> dict[str, Any]:
-        """Short summary for display / MCP status."""
         if not self.is_configured:
             return {"configured": False}
         return {
@@ -66,7 +55,6 @@ class SenderProfile:
 
 
 async def scrape_sender_profile(url: str) -> SenderProfile:
-    """Scrape a website and save as sender profile."""
     scraper = SiteScraper()
     target = ScrapeTarget(source=LeadSource.PLAYWRIGHT, query=url)
     leads = await scraper.scrape(target)

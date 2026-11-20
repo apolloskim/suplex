@@ -39,24 +39,19 @@ class Lead(BaseModel):
     scraped_at: datetime = Field(default_factory=utcnow)
     verification_status: VerificationStatus = VerificationStatus.PENDING
     verified_at: datetime | None = None
-    # Filled in by the enrichment pipeline (website data, email verification, LinkedIn posts).
     enriched_at: datetime | None = None
     enrichment_data: dict[str, Any] = Field(default_factory=dict)
 
 
 class ScrapeTarget(BaseModel):
-    """A single scrape job — what to scrape and how."""
-
     source: LeadSource
     query: str
     location: str | None = None
-    max_results: int = 0  # 0 = exhaust all results
+    max_results: int = 0
     extra: dict[str, Any] = Field(default_factory=dict)
 
 
 class ScrapePlan(BaseModel):
-    """AI-generated plan for what to scrape."""
-
     reasoning: str
     targets: list[ScrapeTarget]
     schedule_cron: str | None = None

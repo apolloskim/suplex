@@ -1,5 +1,3 @@
-"""MCP server — exposes scraping, verification, and planning tools for AI agents."""
-
 from __future__ import annotations
 
 import asyncio
@@ -617,7 +615,6 @@ async def list_tools() -> list[Tool]:
                 "required": ["type", "tile_count"],
             },
         ),
-        # --- Outreach tools ---
         Tool(
             name="get_outreach_playbook",
             description=(
@@ -820,7 +817,6 @@ async def _dispatch(name: str, args: dict) -> dict | list:
         profile = SenderProfile.load()
         return profile.summary()
 
-    # Reload config-dependent services on each call.
     store, coordinator, verifier, strategist = _load_services()
 
     if name == "plan_scrape":
@@ -843,7 +839,6 @@ async def _dispatch(name: str, args: dict) -> dict | list:
 
     elif name == "scrape_linkedin":
         extra: dict = {"mode": "full_with_email"}
-        # Map MCP args to extra dict keys that _build_input() reads.
         _EXTRA_MAP = {
             "job_titles": "job_titles",
             "past_job_titles": "past_job_titles",
@@ -1011,7 +1006,6 @@ async def _dispatch(name: str, args: dict) -> dict | list:
         else:
             return estimate_gmaps_cost(args["tile_count"], args.get("results_per_tile", 100))
 
-    # --- Outreach tools ---
 
     elif name == "get_outreach_playbook":
         from suplex.outreach.playbook import get_playbook, get_playbook_summary
@@ -1088,7 +1082,6 @@ async def _dispatch(name: str, args: dict) -> dict | list:
 
 
 async def _ensure_reacher_docker() -> dict:
-    """Check Docker and start Reacher container if needed."""
     import shutil
 
     if not shutil.which("docker"):
@@ -1097,7 +1090,6 @@ async def _ensure_reacher_docker() -> dict:
             "message": "Docker is not installed. Ask the user to install Docker Desktop from https://docs.docker.com/get-docker/ then try again.",
         }
 
-    # Check if container exists and is running.
     proc = await asyncio.create_subprocess_exec(
         "docker", "inspect", "-f", "{{.State.Running}}", "suplex-reacher",
         stdout=asyncio.subprocess.PIPE,
@@ -1109,7 +1101,6 @@ async def _ensure_reacher_docker() -> dict:
         return {"status": "running", "message": "Reacher is already running at localhost:8080"}
 
     if proc.returncode == 0:
-        # Exists but stopped — start it.
         proc = await asyncio.create_subprocess_exec(
             "docker", "start", "suplex-reacher",
             stdout=asyncio.subprocess.PIPE,
@@ -1118,7 +1109,6 @@ async def _ensure_reacher_docker() -> dict:
         await proc.wait()
         return {"status": "started", "message": "Reacher container restarted at localhost:8080"}
 
-    # Container doesn't exist — pull and create.
     proc = await asyncio.create_subprocess_exec(
         "docker", "run", "-d",
         "--name", "suplex-reacher",
@@ -1133,7 +1123,6 @@ async def _ensure_reacher_docker() -> dict:
     if proc.returncode != 0:
         return {"status": "error", "message": f"Docker run failed: {stderr.decode()}"}
 
-    # Wait for ready.
     for _ in range(15):
         try:
             async with httpx.AsyncClient(timeout=2) as client:

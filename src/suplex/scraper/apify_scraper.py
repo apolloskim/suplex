@@ -1,9 +1,3 @@
-"""Apify-based Google Maps scraper.
-
-Google Maps: uses customGeolocation (GeoJSON polygon) for US states when available.
-Polygon-based search yields 10-30x more results than text-based locationQuery.
-"""
-
 from __future__ import annotations
 
 import json
@@ -20,13 +14,11 @@ logger = logging.getLogger(__name__)
 
 GOOGLE_MAPS_ACTOR = "compass/crawler-google-places"
 
-# State polygons for customGeolocation.
 _STATE_POLYGONS: dict[str, Any] | None = None
 _STATES_PATH = Path(__file__).parent.parent / "geo" / "us-states.json"
 
 
 def _get_state_polygon(state_name: str) -> dict | None:
-    """Get GeoJSON geometry for a US state. Loaded lazily."""
     global _STATE_POLYGONS
     if _STATE_POLYGONS is None:
         if _STATES_PATH.exists():
@@ -43,8 +35,6 @@ def _get_state_polygon(state_name: str) -> dict | None:
 
 
 class ApifyScraper:
-    """Scrapes Google Maps through the compass/crawler-google-places actor."""
-
     def __init__(self, token: str | None = None) -> None:
         self.token = token or os.environ.get("APIFY_TOKEN", "")
 
@@ -54,7 +44,6 @@ class ApifyScraper:
         return await self.scrape_google_maps(target)
 
     async def scrape_google_maps(self, target: ScrapeTarget) -> list[Lead]:
-        """Scrape Google Maps. Uses polygon for US states (10-30x more results)."""
         logger.info("Apify Google Maps: %s (location: %s)", target.query, target.location)
 
         run_input: dict[str, Any] = {
@@ -67,7 +56,6 @@ class ApifyScraper:
         if target.max_results > 0:
             run_input["maxCrawledPlacesPerSearch"] = target.max_results
 
-        # Try polygon first (US states), fall back to text.
         state = target.extra.get("tile_state", "")
         country = target.extra.get("tile_country", "")
         polygon = None

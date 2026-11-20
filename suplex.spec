@@ -1,16 +1,11 @@
-# PyInstaller spec for building suplex as a single binary.
-# Run: pyinstaller suplex.spec
-
 import os
 import sys
 from pathlib import Path
 
 block_cipher = None
 
-# Find the package source.
 src = Path("src/suplex")
 
-# Data files to bundle (geo data, skills, linkedin autocomplete).
 datas = [
     (str(src / "geo" / "us-cities.json"), "suplex/geo"),
     (str(src / "geo" / "worldcities.csv"), "suplex/geo"),
@@ -18,7 +13,6 @@ datas = [
     (str(src / "skills"), "suplex/skills"),
 ]
 
-# Hidden imports that PyInstaller can't detect.
 hiddenimports = [
     "suplex.cli",
     "suplex.mcp_server",
@@ -41,7 +35,6 @@ hiddenimports = [
     "suplex.apify_budget",
     "suplex.models",
     "suplex.ai.strategist",
-    # Dependencies that need explicit imports.
     "anyio",
     "anyio._backends._asyncio",
     "httpx",

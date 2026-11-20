@@ -13,25 +13,18 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
-    # Scraping
     "playwright>=1.58",
-    "apify-client>=2.5",
+    "apify-client>=2.5,<3",
     "httpx>=0.28",
     "selectolax>=0.3",
     "extruct>=0.18",
     "trafilatura>=2.0",
-    # Concurrency
     "anyio>=4.9",
     "psutil>=6.0",
-    # AI
-    "anthropic>=0.52",
-    # Email verification
+    "anthropic>=0.52,<1",
     "email-validator>=2.2",
-    # MCP server
-    "mcp[cli]>=1.9",
-    # CLI
+    "mcp[cli]>=1.9,<2",
     "click>=8.1",
-    # Data
     "pydantic>=2.11",
 ]
 

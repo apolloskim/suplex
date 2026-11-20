@@ -1,6 +1,4 @@
 #!/bin/bash
-# Install suplex — single binary, no dependencies.
-# Usage: curl -fsSL https://raw.githubusercontent.com/apolloskim/suplex/main/install.sh | bash
 
 set -e
 
@@ -8,7 +6,6 @@ REPO="apolloskim/suplex"
 INSTALL_DIR="${SUPLEX_INSTALL_DIR:-/usr/local/bin}"
 BINARY_NAME="suplex"
 
-# Detect OS and architecture.
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 ARCH=$(uname -m)
 
@@ -28,7 +25,6 @@ ASSET_NAME="suplex-${PLATFORM}-${ARCH}"
 
 echo "Installing suplex for ${PLATFORM}-${ARCH}..."
 
-# Get latest release URL.
 RELEASE_URL=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
     | grep "browser_download_url.*${ASSET_NAME}" \
     | head -1 \
@@ -40,13 +36,11 @@ if [ -z "$RELEASE_URL" ]; then
     exit 1
 fi
 
-# Download.
 TMPFILE=$(mktemp)
 echo "Downloading from ${RELEASE_URL}..."
 curl -fsSL "$RELEASE_URL" -o "$TMPFILE"
 chmod +x "$TMPFILE"
 
-# Install.
 if [ -w "$INSTALL_DIR" ]; then
     mv "$TMPFILE" "${INSTALL_DIR}/${BINARY_NAME}"
 else

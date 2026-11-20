@@ -1,15 +1,3 @@
-"""Google Maps scraper via Playwright — local, free alternative to Apify.
-
-Ported from suplex-desktop's googleMapsPlaywright.ts.
-Searches Google Maps, scrolls results, extracts business details.
-
-Cooldown/pacing adapted from suplex-desktop:
-- Random delays between place visits (2-5s, every 8th = 7-15s)
-- Random delays between feed scrolls (1-3s, every 14th = 3-8s)
-- Post-navigation dwell (0.5-1.3s)
-- Daily limit: 1000 searches (configurable)
-"""
-
 from __future__ import annotations
 
 import logging
@@ -26,15 +14,14 @@ logger = logging.getLogger(__name__)
 
 MAPS_URL = "https://www.google.com/maps/search/{query}"
 MAPS_COORD_URL = "https://www.google.com/maps/search/{query}/@{lat},{lng},{zoom}z"
-DEFAULT_ZOOM = 13  # ~10km radius viewport.
-DAILY_LIMIT = 1000  # Max place visits per day via Playwright.
+DEFAULT_ZOOM = 13
+DAILY_LIMIT = 1000
 
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 
-# Selectors (from suplex-desktop).
 SEL_FEED = 'div[role="feed"]'
 SEL_PLACE_LINKS = 'a[href*="/maps/place"]'
 SEL_TITLE = "h1.DUwDvf, h1.fontHeadlineLarge"
@@ -52,16 +39,10 @@ REVIEW_COUNT_RE = re.compile(r"([\d,]+)\s*review", re.IGNORECASE)
 
 
 class DailyLimitReached(RuntimeError):
-    """The per-process Playwright visit limit is used up; the tile was not scraped."""
+    pass
 
 
 class GMapsScraper:
-    """Scrape Google Maps search results via Playwright.
-
-    Daily limit: 1000 place visits per day (configurable via DAILY_LIMIT).
-    Pacing: random delays between visits, longer pauses every 8th visit.
-    """
-
     _daily_count: int = 0
     _daily_date: str = ""
 
@@ -69,15 +50,12 @@ class GMapsScraper:
         self.reviews_per_place = reviews_per_place
 
     async def scrape(self, target: ScrapeTarget) -> list[Lead]:
-        # Check daily limit.
         from datetime import date
         today = date.today().isoformat()
         if self._daily_date != today:
             GMapsScraper._daily_date = today
             GMapsScraper._daily_count = 0
         if self._daily_count >= DAILY_LIMIT:
-            # Raise instead of returning []: an empty result would mark this tile
-            # as done, and `suplex resume -s apify` would then skip it for good.
             raise DailyLimitReached(
                 f"Playwright daily limit reached ({DAILY_LIMIT} places). "
                 "Resume later, or resume with `-s apify`."
@@ -85,10 +63,9 @@ class GMapsScraper:
         query = target.query
         max_results = target.max_results
 
-        # Use coordinate-based URL if tile has lat/lng (more precise geographic targeting).
         lat = target.extra.get("tile_lat")
         lng = target.extra.get("tile_lng")
-        has_coords = lat is not None and lng is not None  # 0.0 is a valid coordinate.
+        has_coords = lat is not None and lng is not None
         if has_coords:
             url = MAPS_COORD_URL.format(
                 query=quote_plus(query), lat=lat, lng=lng,
@@ -119,28 +96,22 @@ class GMapsScraper:
         try:
             page = await context.new_page()
 
-            # Navigate to Google Maps search.
             await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
             await page.wait_for_timeout(random.randint(2000, 4000))
 
-            # Accept cookies/consent if present.
             await self._dismiss_consent(page)
 
-            # Wait for results feed.
             try:
                 await page.wait_for_selector(SEL_FEED, timeout=10_000)
             except Exception:
                 logger.warning("No results feed found for query: %s", query)
                 return leads
 
-            # Scroll and collect place links — exhaust all results.
             place_urls = await self._scroll_and_collect(page, max_results)
             logger.info("Found %d place links", len(place_urls))
 
-            # Visit each place with human-like pacing.
             for i, place_url in enumerate(place_urls):
                 try:
-                    # Pacing: every 8th place gets a longer pause.
                     if i > 0:
                         if (i + 1) % 8 == 0:
                             await page.wait_for_timeout(random.randint(7000, 15000))
@@ -169,8 +140,6 @@ class GMapsScraper:
 
     @staticmethod
     async def _dismiss_consent(page: Page) -> None:
-        """Dismiss Google consent/cookie dialogs (multi-region)."""
-        # Try iframe-based consent first (common in EU).
         for frame in page.frames:
             for selector in (
                 'button[aria-label="Accept all"]',
@@ -194,20 +163,13 @@ class GMapsScraper:
 
     @staticmethod
     async def _scroll_and_collect(page: Page, target_count: int) -> list[str]:
-        """Scroll the results feed and collect place URLs.
-
-        If target_count > 0, stop after collecting that many.
-        If target_count == 0, scroll until Google runs out of results.
-        """
-        seen_urls: dict[str, None] = {}  # Ordered set via dict.
+        seen_urls: dict[str, None] = {}
         stale_count = 0
-        # Google Maps shows max ~120 results per query. 200 scrolls is generous.
         max_scrolls = target_count * 3 if target_count > 0 else 200
 
         feed = page.locator(SEL_FEED)
 
         for _ in range(max_scrolls):
-            # Collect current links.
             links = await page.query_selector_all(SEL_PLACE_LINKS)
             for link in links:
                 href = await link.get_attribute("href")
@@ -217,7 +179,6 @@ class GMapsScraper:
             if target_count > 0 and len(seen_urls) >= target_count:
                 break
 
-            # Scroll the feed with pacing.
             prev_count = len(seen_urls)
             scroll_count = len(seen_urls)
             await feed.evaluate("el => el.scrollBy(0, el.clientHeight * 0.8)")
@@ -226,7 +187,6 @@ class GMapsScraper:
             else:
                 await page.wait_for_timeout(random.randint(1200, 3200))
 
-            # Check for "end of results" text.
             end_marker = page.locator("text=You've reached the end of the list")
             try:
                 if await end_marker.is_visible(timeout=500):
@@ -234,7 +194,6 @@ class GMapsScraper:
             except Exception:
                 pass
 
-            # Stale detection.
             if len(seen_urls) == prev_count:
                 stale_count += 1
                 if stale_count >= 5:
@@ -246,11 +205,9 @@ class GMapsScraper:
 
     @staticmethod
     async def _extract_place(page: Page, url: str, context=None, max_reviews: int = 5) -> dict[str, Any] | None:
-        """Navigate to a place and extract its details + reviews."""
         await page.goto(url, wait_until="domcontentloaded", timeout=20_000)
         await page.wait_for_timeout(2000)
 
-        # Title.
         title_el = await page.query_selector(SEL_TITLE)
         if not title_el:
             return None
@@ -260,7 +217,6 @@ class GMapsScraper:
 
         detail: dict[str, Any] = {"title": title, "url": url}
 
-        # Rating.
         rating_el = await page.query_selector(SEL_RATING)
         if rating_el:
             try:
@@ -268,7 +224,6 @@ class GMapsScraper:
             except ValueError:
                 pass
 
-        # Review count.
         review_el = await page.query_selector(SEL_REVIEW_COUNT)
         if review_el:
             text = await review_el.inner_text()
@@ -276,48 +231,40 @@ class GMapsScraper:
             if match:
                 detail["review_count"] = int(match.group(1).replace(",", ""))
 
-        # Category.
         cat_el = await page.query_selector(SEL_CATEGORY)
         if cat_el:
             detail["category"] = (await cat_el.inner_text()).strip()
 
-        # Phone.
         phone_el = await page.query_selector(SEL_PHONE)
         if phone_el:
             detail["phone"] = (await phone_el.inner_text()).strip()
 
-        # Address.
         addr_el = await page.query_selector(SEL_ADDRESS)
         if addr_el:
             detail["address"] = (await addr_el.inner_text()).strip()
 
-        # Website.
         web_el = await page.query_selector(SEL_WEBSITE)
         if web_el:
             href = await web_el.get_attribute("href")
             if href:
                 detail["website"] = href
 
-        # Price level.
         price_el = await page.query_selector(SEL_PRICE)
         if price_el:
             label = await price_el.get_attribute("aria-label")
             if label:
                 detail["price_level"] = label
 
-        # Hours.
         hours_el = await page.query_selector(SEL_HOURS)
         if hours_el:
             label = await hours_el.get_attribute("aria-label")
             if label:
                 detail["hours"] = label
 
-        # Place ID from URL.
         place_match = re.search(r"place/[^/]+/[^/]*!8m2!3d[^!]+!4d[^!]+", url)
         if place_match:
             detail["maps_url"] = url
 
-        # Reviews via RPC API (if context available).
         if context and max_reviews > 0:
             try:
                 from suplex.scraper.review_scraper import scrape_reviews

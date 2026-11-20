@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
-      id-token: write  # Required for trusted publishing
+      id-token: write
 
     steps:
       - uses: actions/checkout@v4
@@ -33,5 +33,3 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
-        # No API token needed — uses OIDC trusted publishing.
-        # Configure at: https://pypi.org/manage/project/suplex-ai/settings/publishing/

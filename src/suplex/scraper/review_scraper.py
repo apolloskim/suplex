@@ -1,10 +1,3 @@
-"""Google Maps review scraper — uses RPC API via browser context.
-
-Ported from suplex-desktop's freeReviewScraper.ts.
-Requires a Playwright browser context with Google Maps cookies.
-Extracts reviews via the internal listentitiesreviews RPC endpoint.
-"""
-
 from __future__ import annotations
 
 import json
@@ -22,7 +15,6 @@ RPC_ENDPOINT = "https://www.google.com/maps/preview/review/listentitiesreviews"
 
 
 def _parse_data_ids(url: str) -> tuple[int, int] | None:
-    """Extract FID and CID decimal IDs from a Google Maps URL."""
     match = DATA_ID_RE.search(url)
     if not match:
         return None
@@ -33,7 +25,6 @@ def _parse_data_ids(url: str) -> tuple[int, int] | None:
 
 
 def _build_pb(fid_dec: int, cid_dec: int, offset: int = 0, limit: int = 10, sort: int = 1) -> str:
-    """Build the protobuf-like pb parameter for the RPC endpoint."""
     token = secrets.token_urlsafe(12)
     return (
         f"!1m2!1y{fid_dec}!2y{cid_dec}"
@@ -45,8 +36,6 @@ def _build_pb(fid_dec: int, cid_dec: int, offset: int = 0, limit: int = 10, sort
 
 
 def _parse_rpc_response(body: str) -> tuple[list[dict], int | None]:
-    """Parse the RPC response into reviews + total count."""
-    # Strip XSSI prefix.
     if body.startswith(")]}'"):
         body = body[4:].strip()
 
@@ -55,7 +44,6 @@ def _parse_rpc_response(body: str) -> tuple[list[dict], int | None]:
     except json.JSONDecodeError:
         return [], None
 
-    # Total review count at payload[5][4].
     total = None
     try:
         if isinstance(payload, list) and len(payload) > 5:
@@ -67,7 +55,6 @@ def _parse_rpc_response(body: str) -> tuple[list[dict], int | None]:
     except (IndexError, TypeError):
         pass
 
-    # Reviews at payload[2].
     raw_reviews = payload[2] if isinstance(payload, list) and len(payload) > 2 else None
     if not isinstance(raw_reviews, list):
         return [], total
@@ -77,7 +64,6 @@ def _parse_rpc_response(body: str) -> tuple[list[dict], int | None]:
         if not isinstance(row, list) or len(row) < 5:
             continue
 
-        # row[0] = author info (list), row[1] = relative date, row[3] = text, row[4] = stars
         author = ""
         if isinstance(row[0], list) and len(row[0]) > 1:
             author = str(row[0][1] or "").strip()
@@ -109,19 +95,10 @@ async def scrape_reviews(
     place_url: str | None = None,
     max_reviews: int = 10,
 ) -> dict[str, Any]:
-    """Scrape Google Maps reviews for the current place page.
-
-    Uses the RPC API with browser context cookies. The page must already
-    be on a Google Maps place page.
-
-    Returns: {"rating": float, "review_count": int, "reviews": [...]}
-    """
-    # Get data IDs from page URL.
     current_url = place_url or page.url
     ids = _parse_data_ids(current_url)
 
     if not ids:
-        # Try extracting from DOM (canonical link, meta tags, anchors).
         ids = await _extract_ids_from_dom(page)
 
     if not ids:
@@ -130,7 +107,6 @@ async def scrape_reviews(
 
     fid_dec, cid_dec = ids
 
-    # Get rating from the page.
     rating = await page.evaluate("""() => {
         const el = document.querySelector('div.F7nice span[aria-hidden="true"]');
         if (el) return parseFloat(el.textContent.replace(',', '.'));
@@ -142,18 +118,16 @@ async def scrape_reviews(
         return null;
     }""")
 
-    # Fetch reviews via RPC API.
     all_reviews: list[dict] = []
     total_count = None
     seen_texts: set[str] = set()
 
-    # Try sort=1 (newest) first, then sort=2 (most relevant) for variety.
     for sort_mode in (1, 2):
         if len(all_reviews) >= max_reviews:
             break
 
         remaining = max_reviews - len(all_reviews)
-        limit = min(remaining, 10)  # API max 10 per call.
+        limit = min(remaining, 10)
         pb = _build_pb(fid_dec, cid_dec, offset=0, limit=limit, sort=sort_mode)
         url = f"{RPC_ENDPOINT}?authuser=0&hl=en&gl=us&pb={pb}"
 
@@ -170,7 +144,6 @@ async def scrape_reviews(
                 total_count = count
 
             for review in reviews:
-                # Deduplicate by text prefix.
                 key = review["text"][:80].lower()
                 if key in seen_texts:
                     continue
@@ -195,18 +168,15 @@ async def scrape_reviews(
 
 
 async def _extract_ids_from_dom(page: Page) -> tuple[int, int] | None:
-    """Extract data IDs from DOM elements when URL doesn't have them."""
     raw = await page.evaluate("""() => {
         const re = /(0x[0-9a-fA-F]{8,}:0x[0-9a-fA-F]{8,})/;
 
-        // Try canonical link.
         const canonical = document.querySelector('link[rel="canonical"]');
         if (canonical) {
             const m = (canonical.getAttribute('href') || '').match(re);
             if (m) return m[1];
         }
 
-        // Try meta tags.
         for (const sel of ['meta[property="og:url"]', 'meta[itemprop="url"]', 'meta[name="twitter:url"]']) {
             const el = document.querySelector(sel);
             if (el) {
@@ -215,7 +185,6 @@ async def _extract_ids_from_dom(page: Page) -> tuple[int, int] | None:
             }
         }
 
-        // Try anchors with hex IDs.
         for (const a of document.querySelectorAll('a[href*="0x"]')) {
             const m = (a.getAttribute('href') || '').match(re);
             if (m) return m[1];

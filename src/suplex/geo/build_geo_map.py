@@ -1,19 +1,3 @@
-"""Build the linkedin_geo_map table from autocomplete data.
-
-Parses every autocomplete string and creates lookup keys at every level:
-  "Amsterdam, North Holland, Netherlands"
-  → keys: "amsterdam", "north holland", "netherlands",
-           "amsterdam, north holland", "amsterdam, netherlands",
-           "north holland, netherlands"
-
-Also handles:
-  "Seoul Incheon Metropolitan Area" → "seoul", "incheon", "seoul incheon"
-  "Greater London, England, United Kingdom" → "london", "england", "united kingdom", "uk"
-  "Austin, Texas Metropolitan Area" → "austin", "texas", "austin, texas"
-
-Run this whenever new autocomplete data is added.
-"""
-
 from __future__ import annotations
 
 import json
@@ -24,7 +8,6 @@ from suplex.store.db import LeadStore
 
 logger = logging.getLogger(__name__)
 
-# Common country aliases to add as lookup keys.
 COUNTRY_ALIASES = {
     "united kingdom": ["uk", "britain", "england"],
     "united states": ["us", "usa"],
@@ -42,7 +25,6 @@ def _strip_accents(s: str) -> str:
 
 
 def build_geo_map(store: LeadStore) -> int:
-    """Build the geo map from existing linkedin_locations data in SQLite."""
     pairs: set[tuple[str, str]] = set()
 
     with store._conn() as conn:
@@ -56,7 +38,6 @@ def build_geo_map(store: LeadStore) -> int:
             for key in keys:
                 pairs.add((key, autocomplete))
 
-            # Also map the original city name (and its accent-stripped form) to each autocomplete.
             pairs.add((city_name.lower(), autocomplete))
             stripped = _strip_accents(city_name.lower())
             if stripped != city_name.lower():
@@ -69,31 +50,25 @@ def build_geo_map(store: LeadStore) -> int:
 
 
 def _extract_keys(autocomplete: str) -> list[str]:
-    """Extract all lookup keys from an autocomplete string."""
     keys: list[str] = []
 
-    # Clean up the string.
     clean = autocomplete.strip()
     if not clean:
         return keys
 
-    # Split by comma to get geographic parts.
     parts = [p.strip() for p in clean.split(",")]
     parts = [p for p in parts if p]
 
-    # Each part is a lookup key.
     for part in parts:
         key = part.lower().strip()
         if key and len(key) > 1:
             keys.append(key)
 
-    # Combinations: "city, state", "city, country", "state, country"
     for i in range(len(parts)):
         for j in range(i + 1, len(parts)):
             combo = f"{parts[i].lower()}, {parts[j].lower()}"
             keys.append(combo)
 
-    # Handle "X Metropolitan Area", "Greater X", "X Area" patterns.
     area_match = re.match(
         r"^(?:greater\s+)?(.+?)(?:\s+(?:metropolitan\s+)?area)$",
         clean,
@@ -101,7 +76,6 @@ def _extract_keys(autocomplete: str) -> list[str]:
     )
     if area_match:
         inner = area_match.group(1).strip()
-        # "Seoul Incheon" → "seoul", "incheon", "seoul incheon"
         inner_parts = inner.split()
         for ip in inner_parts:
             key = ip.lower().strip()
@@ -110,15 +84,12 @@ def _extract_keys(autocomplete: str) -> list[str]:
         if len(inner_parts) > 1:
             keys.append(inner.lower())
 
-    # Add the full string itself as a key.
     keys.append(clean.lower())
 
-    # Add country aliases.
     for country, aliases in COUNTRY_ALIASES.items():
         if country in clean.lower():
             keys.extend(aliases)
 
-    # Add accent-stripped variants.
     import unicodedata
     stripped: list[str] = []
     for key in keys:
@@ -129,5 +100,4 @@ def _extract_keys(autocomplete: str) -> list[str]:
             stripped.append(normalized)
     keys.extend(stripped)
 
-    # Deduplicate.
     return list(dict.fromkeys(keys))

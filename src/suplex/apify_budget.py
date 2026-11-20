@@ -1,5 +1,3 @@
-"""Apify budget awareness — check usage/limits before launching jobs."""
-
 from __future__ import annotations
 
 import logging
@@ -12,11 +10,6 @@ logger = logging.getLogger(__name__)
 
 
 async def get_apify_budget(token: str | None = None) -> dict:
-    """Get current Apify usage, limits, and remaining budget.
-
-    Returns ``{"error": ...}`` when the budget cannot be determined (no token,
-    network failure, non-200 response). Callers decide what that means.
-    """
     token = token or Config.load().apify_token
     if not token:
         return {"error": "No Apify token configured"}
@@ -58,12 +51,6 @@ async def get_apify_budget(token: str | None = None) -> dict:
 
 
 def estimate_linkedin_cost(tile_count: int, results_per_tile: int = 25) -> dict:
-    """Estimate cost for LinkedIn scraping.
-
-    Pricing (harvestapi/linkedin-profile-search):
-    - $0.10 per search page (25 results)
-    - Full+email: $0.01 per profile
-    """
     pages_per_tile = max(1, results_per_tile // 25)
     page_cost = tile_count * pages_per_tile * 0.10
     profile_cost = tile_count * results_per_tile * 0.01
@@ -80,12 +67,6 @@ def estimate_linkedin_cost(tile_count: int, results_per_tile: int = 25) -> dict:
 
 
 def estimate_gmaps_cost(tile_count: int, results_per_tile: int = 100) -> dict:
-    """Estimate cost for Google Maps Apify scraping.
-
-    Pricing (compass/crawler-google-places):
-    - $0.007 per run start
-    - $0.004 per place scraped
-    """
     run_cost = tile_count * 0.007
     place_cost = tile_count * results_per_tile * 0.004
     total = run_cost + place_cost

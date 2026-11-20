@@ -1,5 +1,3 @@
-"""Run an Apify actor and collect its dataset — shared by every Apify-backed scraper."""
-
 from __future__ import annotations
 
 import logging
@@ -11,11 +9,10 @@ logger = logging.getLogger(__name__)
 
 
 class ApifyError(RuntimeError):
-    """An Apify run could not be started."""
+    pass
 
 
 async def run_actor(token: str, actor_id: str, run_input: dict[str, Any]) -> list[dict[str, Any]]:
-    """Run ``actor_id`` to completion and return the items in its default dataset."""
     if not token:
         raise ApifyError(
             f"No Apify token configured, so {actor_id} cannot run. "
@@ -29,7 +26,6 @@ async def run_actor(token: str, actor_id: str, run_input: dict[str, Any]) -> lis
 
     status = run.get("status")
     if status != "SUCCEEDED":
-        # A timed-out or aborted run can still hold results that were paid for, so keep them.
         logger.warning("Apify actor %s finished with status %s — using partial results", actor_id, status)
 
     page = await client.dataset(run["defaultDatasetId"]).list_items()

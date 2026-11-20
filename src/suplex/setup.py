@@ -1,12 +1,9 @@
-"""Setup & validation — used by both CLI (interactive) and MCP (agent-driven)."""
-
 from __future__ import annotations
 
 import httpx
 
 from suplex.config import Config
 
-# Service metadata for guiding agents/users.
 SERVICES = {
     "apify_token": {
         "name": "Apify",
@@ -40,7 +37,6 @@ SERVICES = {
 
 
 async def validate_key(service_key: str, value: str) -> dict:
-    """Validate an API key and return status + details."""
     validators = {
         "apify_token": _validate_apify,
         "anthropic_api_key": _validate_anthropic,
@@ -54,7 +50,6 @@ async def validate_key(service_key: str, value: str) -> dict:
 
 
 async def configure_key(service_key: str, value: str) -> dict:
-    """Validate a key, and if valid, save it to config."""
     result = await validate_key(service_key, value)
     if result["valid"]:
         config = Config.load()
@@ -65,7 +60,6 @@ async def configure_key(service_key: str, value: str) -> dict:
 
 
 def get_setup_status() -> dict:
-    """Return current setup status — what's configured, what's missing."""
     config = Config.load()
     status: dict = {"configured": [], "missing_required": [], "missing_optional": []}
 
@@ -86,11 +80,6 @@ def get_setup_status() -> dict:
 
     status["ready"] = len(status["missing_required"]) == 0
     return status
-
-
-# ---------------------------------------------------------------------------
-# Validators — hit the real API to confirm the key works
-# ---------------------------------------------------------------------------
 
 
 async def _validate_apify(token: str) -> dict:
@@ -133,13 +122,12 @@ async def _validate_anthropic(key: str) -> dict:
 async def _validate_reacher(key: str) -> dict:
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            # Reacher hosted API.
             resp = await client.post(
                 "https://api.reacher.email/v0/check_email",
                 headers={"Authorization": key},
                 json={"to_email": "test@gmail.com"},
             )
-            if resp.status_code in (200, 429):  # 429 = valid key, rate limited.
+            if resp.status_code in (200, 429):
                 return {"valid": True}
             return {"valid": False, "error": f"HTTP {resp.status_code}"}
     except httpx.HTTPError as e:

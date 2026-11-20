@@ -1,9 +1,3 @@
-"""Background job launcher — starts scrape/enrich as detached processes.
-
-The job runs in a separate process that survives terminal closure.
-Progress is tracked in SQLite (jobs table) — any process can read it.
-"""
-
 from __future__ import annotations
 
 import json
@@ -39,13 +33,11 @@ def launch_scrape_job(
     extra_args: list[str] | None = None,
     job_id: str | None = None,
 ) -> dict:
-    """Launch a scrape job in the background. Returns job info immediately."""
     job_id = job_id or _gen_id()
     log_path = _log_path(job_id)
 
     cmd = [*_suplex_cmd(), "scrape", source, query, "-l", location, *(extra_args or [])]
 
-    # Pre-create job row with meta so resume can reconstruct the command.
     meta: dict[str, object] = {"type": "scrape", "source": source, "query": query, "location": location}
     if extra_args:
         meta["extra_args"] = extra_args
@@ -62,7 +54,6 @@ def launch_enrich_job(
     linkedin_posts: int = 1,
     job_id: str | None = None,
 ) -> dict:
-    """Launch an enrichment job in the background."""
     job_id = job_id or _gen_id()
     log_path = _log_path(job_id)
 
@@ -92,7 +83,6 @@ def launch_reddit_watch_job(
     headful: bool = False,
     job_id: str | None = None,
 ) -> dict:
-    """Launch a Reddit live-feed watcher in the background."""
     job_id = job_id or _gen_id()
     log_path = _log_path(job_id)
     state_path = _state_path(job_id)
@@ -296,10 +286,6 @@ def launch_reddit_hydrate_job(
 
 
 def launch_batch_job(specs: list[dict], *, max_parallel: int = 3) -> dict:
-    """Launch a batch of scrape/enrich jobs with concurrency control.
-
-    Each spec: {"type": "scrape_maps"|"scrape_linkedin"|"enrich", "query": ..., "location": ..., ...}
-    """
     if not specs:
         return {"error": "A batch needs at least one job"}
     unknown = sorted({str(spec.get("type")) for spec in specs} - BATCH_CHILD_TYPES)
@@ -312,7 +298,6 @@ def launch_batch_job(specs: list[dict], *, max_parallel: int = 3) -> dict:
     batch_id = _gen_id()
     store = LeadStore()
 
-    # Build child specs with job IDs.
     child_specs = []
     for spec in specs:
         child_id = _gen_id()
@@ -324,13 +309,11 @@ def launch_batch_job(specs: list[dict], *, max_parallel: int = 3) -> dict:
 
     store.create_batch_job(batch_id, child_specs, meta={"total_specs": len(specs)})
 
-    # Launch first N children.
     launched = []
     for child in child_specs[:max_parallel]:
         _launch_child_job(child)
         launched.append(child["job_id"])
 
-    # Spawn watchdog — auto-advances the batch when slots open.
     _spawn_watchdog(batch_id, max_parallel)
 
     logger.info("Batch %s: %d jobs, %d launched + watchdog", batch_id, len(specs), len(launched))
@@ -343,7 +326,6 @@ def launch_batch_job(specs: list[dict], *, max_parallel: int = 3) -> dict:
 
 
 def advance_batch(batch_id: str, max_parallel: int = 3) -> dict:
-    """Check batch status and launch next pending children if slots are open."""
     store = LeadStore()
     status = _reconciled_batch_status(store, batch_id)
     if not status:
@@ -363,7 +345,6 @@ def advance_batch(batch_id: str, max_parallel: int = 3) -> dict:
             _launch_child_job({"job_id": child["id"], "type": child["type"], "meta": meta})
             newly_launched.append(child["id"])
 
-    # Check if batch is complete.
     terminal = _terminal_count(status)
     if terminal == status["total_jobs"]:
         final_status = _final_batch_status(status)
@@ -373,7 +354,6 @@ def advance_batch(batch_id: str, max_parallel: int = 3) -> dict:
 
 
 def get_batch_status(batch_id: str) -> dict:
-    """Get batch status with aggregated progress."""
     store = LeadStore()
     status = _reconciled_batch_status(store, batch_id)
     if not status:
@@ -382,9 +362,7 @@ def get_batch_status(batch_id: str) -> dict:
 
 
 def _meta_to_extra_args(job_type: str, meta: dict) -> list[str]:
-    """Convert batch child meta to CLI extra_args, branched by job type."""
     extra: list[str] = []
-    # Shared flags.
     if meta.get("only"):
         extra.extend(["--only", meta["only"]])
     if meta.get("exclude"):
@@ -413,14 +391,12 @@ def _meta_to_extra_args(job_type: str, meta: dict) -> list[str]:
 
 
 def _launch_child_job(child: dict) -> None:
-    """Launch a single child job from a batch."""
     meta = child.get("meta", {})
     if isinstance(meta, str):
         meta = json.loads(meta)
     job_type = child["type"]
     job_id = child["job_id"]
 
-    # Mark as running (row already exists from create_batch_job).
     store = LeadStore()
     with store._conn() as conn:
         conn.execute("UPDATE jobs SET status = 'running', started_at = ? WHERE id = ?",
@@ -490,11 +466,6 @@ def _launch_child_job(child: dict) -> None:
 
 
 def resume_job(job_id: str, scraper_override: str | None = None) -> dict:
-    """Resume a stopped/failed job. Relaunches the same command with the same job_id.
-
-    The coordinator will skip already-done tiles via item_tasks.
-    scraper_override: switch from playwright to apify (or vice versa) on resume.
-    """
     store = LeadStore()
     job = store.get_job(job_id)
     if not job:
@@ -510,7 +481,6 @@ def resume_job(job_id: str, scraper_override: str | None = None) -> dict:
         if failed == 0:
             return {"error": "Job already completed with no failures", "job_id": job_id}
 
-    # Reset failed tasks to pending so they get retried.
     reset = store.retry_failed_tasks(job_id)
     store.reset_processing_tasks(job_id)
 
@@ -522,7 +492,6 @@ def resume_job(job_id: str, scraper_override: str | None = None) -> dict:
         query = meta.get("query", "")
         location = meta.get("location", "")
         extra = list(meta.get("extra_args", []))
-        # Apply scraper override — only valid for Google Maps, not LinkedIn.
         if scraper_override and source == "maps":
             new_extra = []
             skip_next = False
@@ -536,14 +505,12 @@ def resume_job(job_id: str, scraper_override: str | None = None) -> dict:
                 new_extra.append(arg)
             new_extra.extend(["-s", scraper_override])
             extra = new_extra
-            # Persist updated args so future resumes use the new scraper.
             meta["extra_args"] = extra
             _update_job_meta(store, job_id, meta)
         elif scraper_override and source == "linkedin":
             logger.warning("Scraper override ignored — LinkedIn always uses Apify")
         launch_scrape_job(source, query, location, extra_args=extra, job_id=job_id)
     elif job_type in ("scrape_maps", "scrape_linkedin"):
-        # Batch child jobs — reconstruct extra_args from meta.
         source = "maps" if job_type == "scrape_maps" else "linkedin"
         query = meta.get("query", "")
         location = meta.get("location", "")
@@ -624,7 +591,6 @@ def resume_job(job_id: str, scraper_override: str | None = None) -> dict:
 
 
 def get_job_status(job_id: str) -> dict:
-    """Get current status of a job from SQLite."""
     store = LeadStore()
     job = store.get_job(job_id)
     if not job:
@@ -663,7 +629,6 @@ def get_job_status(job_id: str) -> dict:
 
 
 def list_jobs(status: str | None = None) -> list[dict]:
-    """List recent jobs."""
     store = LeadStore()
     for job in store.list_jobs(status="running"):
         _reconcile_job(store, job)
@@ -671,11 +636,6 @@ def list_jobs(status: str | None = None) -> list[dict]:
 
 
 def stop_job(job_id: str, *, force: bool = False, store: LeadStore | None = None) -> dict:
-    """Stop a running or pending background job.
-
-    For batch jobs, this also stops the watchdog and any running children, and marks pending
-    children as stopped so the batch cannot relaunch work behind the user's back.
-    """
     store = store or LeadStore()
     job = store.get_job(job_id)
     if not job:
@@ -688,7 +648,6 @@ def stop_job(job_id: str, *, force: bool = False, store: LeadStore | None = None
 
 
 def _spawn_watchdog(batch_id: str, max_parallel: int) -> None:
-    """Spawn a detached watchdog process that auto-advances the batch."""
     cmd = [
         sys.executable, "-c",
         f"from suplex.jobs import _watchdog_loop; _watchdog_loop('{batch_id}', {max_parallel})",
@@ -709,10 +668,6 @@ def _spawn_watchdog(batch_id: str, max_parallel: int) -> None:
 
 
 def _watchdog_loop(batch_id: str, max_parallel: int, poll_interval: int = 15) -> None:
-    """Check every poll_interval seconds and launch next jobs when slots open.
-
-    Runs as a detached subprocess. Exits when batch is complete.
-    """
     store = LeadStore()
 
     while True:
@@ -727,7 +682,6 @@ def _watchdog_loop(batch_id: str, max_parallel: int, poll_interval: int = 15) ->
         terminal = _terminal_count(status)
         total = status["total_jobs"]
 
-        # Batch complete?
         if terminal >= total:
             final_status = _final_batch_status(status)
             store.finish_job(batch_id, final_status)
@@ -738,7 +692,6 @@ def _watchdog_loop(batch_id: str, max_parallel: int, poll_interval: int = 15) ->
             )
             break
 
-        # Launch next jobs if slots open.
         running = store.count_running_children(batch_id)
         slots = max(0, max_parallel - running)
 
@@ -753,12 +706,10 @@ def _watchdog_loop(batch_id: str, max_parallel: int, poll_interval: int = 15) ->
 
 
 def _update_job_meta(store: LeadStore, job_id: str, meta: dict) -> None:
-    """Persist updated meta to the job row (e.g., after scraper override on resume)."""
     store.update_job_meta(job_id, meta)
 
 
 def _terminal_count(status: dict) -> int:
-    """How many children of a batch have finished, in any way."""
     return (
         status["done"] + status.get("done_with_errors", 0)
         + status["failed"] + status.get("stopped", 0)

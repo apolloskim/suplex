@@ -1,9 +1,3 @@
-"""Outreach playbook — local markdown file the agent reads when drafting emails.
-
-The playbook captures the user's outreach personality: tone, angle, CTA,
-footer, audience criteria. The agent surfaces and edits it through conversation.
-"""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -52,19 +46,16 @@ DEFAULT_PLAYBOOK = """\
 
 
 def get_playbook() -> str | None:
-    """Read the current playbook. Returns None if not created yet."""
     if PLAYBOOK_PATH.exists():
         return PLAYBOOK_PATH.read_text()
     return None
 
 
 def get_playbook_summary() -> str:
-    """One-line summary of the playbook for agent to show before drafting."""
     text = get_playbook()
     if not text:
         return "No playbook configured. Run `suplex playbook init` to create one."
 
-    # Extract key sections for summary.
     parts = []
     for section in ["Tone", "CTA", "Angle"]:
         start = text.find(f"## {section}")
@@ -72,7 +63,6 @@ def get_playbook_summary() -> str:
             continue
         end = text.find("\n## ", start + 1)
         block = text[start:end] if end != -1 else text[start:]
-        # Grab first bullet point.
         for line in block.split("\n"):
             line = line.strip()
             if line.startswith("- "):
@@ -83,14 +73,12 @@ def get_playbook_summary() -> str:
 
 
 def init_playbook(content: str | None = None) -> Path:
-    """Create the playbook file. Returns the path."""
     PLAYBOOK_DIR.mkdir(parents=True, exist_ok=True)
     PLAYBOOK_PATH.write_text(content or DEFAULT_PLAYBOOK)
     return PLAYBOOK_PATH
 
 
 def update_playbook(content: str) -> Path:
-    """Overwrite the playbook with new content."""
     PLAYBOOK_DIR.mkdir(parents=True, exist_ok=True)
     PLAYBOOK_PATH.write_text(content)
     return PLAYBOOK_PATH

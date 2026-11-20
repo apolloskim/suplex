@@ -1,5 +1,3 @@
-"""Seed the cities and LinkedIn location tables from bundled data."""
-
 from __future__ import annotations
 
 import csv
@@ -20,14 +18,11 @@ MIN_POPULATION = 0
 
 
 def ensure_cities_seeded(store: LeadStore | None = None) -> None:
-    """Seed cities + LinkedIn locations if needed. Called lazily on first geo query."""
     store = store or LeadStore()
 
-    # --- Cities ---
     if not store.cities_seeded():
         _seed_cities(store)
 
-    # --- LinkedIn locations (separate check, can update independently) ---
     _ensure_linkedin_seeded(store)
 
 
@@ -78,7 +73,6 @@ def _ensure_linkedin_seeded(store: LeadStore) -> None:
     if not LINKEDIN_LOCATIONS_PATH.exists():
         return
 
-    # Check if we need to seed or update.
     with open(LINKEDIN_LOCATIONS_PATH) as f:
         bundled = json.load(f)
     bundled_count = len(bundled)
@@ -89,18 +83,16 @@ def _ensure_linkedin_seeded(store: LeadStore) -> None:
     needs_seed = db_count == 0 or bundled_count > db_count
 
     if not needs_seed:
-        # Also check geo map.
         with store._conn() as conn:
             geo_count = conn.execute("SELECT COUNT(*) FROM linkedin_geo_map").fetchone()[0]
         if geo_count == 0:
-            needs_seed = True  # Geo map missing, rebuild from existing data.
+            needs_seed = True
             _rebuild_geo_map(store)
         return
 
     if db_count > 0:
         logger.info("LinkedIn locations outdated (%d → %d) — updating", db_count, bundled_count)
 
-    # Seed locations.
     logger.info("Seeding LinkedIn locations...")
     rows = []
     for query_key, suggestions in bundled.items():
@@ -113,7 +105,6 @@ def _ensure_linkedin_seeded(store: LeadStore) -> None:
     store.seed_linkedin_locations(rows)
     logger.info("Seeded %d LinkedIn locations", len(rows))
 
-    # Rebuild geo map.
     _rebuild_geo_map(store)
 
 

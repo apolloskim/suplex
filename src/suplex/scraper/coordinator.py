@@ -1,5 +1,3 @@
-"""Scrape coordinator — runs scrapers concurrently with resource limits, job tracking, and crash recovery."""
-
 from __future__ import annotations
 
 import asyncio
@@ -29,25 +27,14 @@ Collector = Callable[[str, list[Lead]], Awaitable[None]]
 
 
 class ScrapeConfigError(ValueError):
-    """The requested scrape cannot run with the current configuration."""
+    pass
 
 
 class ApifyBudgetExhausted(RuntimeError):
-    """The Apify account has no remaining monthly budget."""
+    pass
 
 
 class ScrapeCoordinator:
-    """Orchestrates concurrent scraping with resource bounds, job tracking, and crash recovery.
-
-    ``scraper`` picks the engine for Google Maps targets:
-      - "playwright": local browser (free, slower) — the default
-      - "apify": Apify actor (paid, faster, more results)
-    LinkedIn always goes through Apify; websites always use the site scraper.
-
-    After ``run`` returns, ``failed_targets`` maps the item key of every target
-    that failed in that run to a short reason.
-    """
-
     def __init__(
         self,
         store: LeadStore,
@@ -78,7 +65,6 @@ class ScrapeCoordinator:
         *,
         job_id: str | None = None,
     ) -> list[Lead]:
-        """Run all scrape targets concurrently. Resumable via job_id."""
         self._check_configuration(targets)
         self.failed_targets = {}
 
@@ -86,11 +72,9 @@ class ScrapeCoordinator:
         if len(expanded) != len(targets):
             logger.info("Expanded %d targets → %d tiles", len(targets), len(expanded))
 
-        # Seed item tasks for crash recovery.
         if job_id:
             self.store.create_job(job_id, "scrape", total=len(expanded))
             self.store.seed_item_tasks(job_id, [_item_key(t) for t in expanded])
-            # Reset any stale tasks from a previous crashed run.
             reset = self.store.reset_stale_tasks(job_id)
             if reset:
                 logger.info("Reset %d stale tasks from previous run", reset)
@@ -114,7 +98,6 @@ class ScrapeCoordinator:
             async with anyio.create_task_group() as tg:
                 for target in expanded:
                     item_key = _item_key(target)
-                    # Skip already-done items (crash recovery).
                     if job_id and self.store.is_item_done(job_id, item_key):
                         completed_count += 1
                         continue
@@ -136,12 +119,8 @@ class ScrapeCoordinator:
         logger.info("Scraped %d leads from %d targets", len(all_leads), len(expanded))
         return all_leads
 
-    # ------------------------------------------------------------------
-    # Planning
-    # ------------------------------------------------------------------
 
     def _check_configuration(self, targets: list[ScrapeTarget]) -> None:
-        """Fail before any work starts if a target needs Apify and there is no token."""
         if self._apify_token:
             return
         sources = {t.source for t in targets}
@@ -157,7 +136,6 @@ class ScrapeCoordinator:
             )
 
     def _expand(self, targets: list[ScrapeTarget]) -> list[ScrapeTarget]:
-        """Turn each located Maps/LinkedIn target into per-city tiles and apply region filters."""
         expanded: list[ScrapeTarget] = []
         for target in targets:
             if target.source not in (LeadSource.GOOGLE_MAPS, LeadSource.LINKEDIN) or not target.location:
@@ -169,7 +147,6 @@ class ScrapeCoordinator:
                 max_results_per_tile=target.max_results,
                 source=target.source, store=self.store,
             )
-            # Carry the original target's options onto each tile (tile-specific keys win).
             for tile in tiles:
                 tile.extra = {**target.extra, **tile.extra}
 
@@ -180,9 +157,6 @@ class ScrapeCoordinator:
             ))
         return expanded
 
-    # ------------------------------------------------------------------
-    # Execution
-    # ------------------------------------------------------------------
 
     async def _run_target(
         self, target: ScrapeTarget, item_key: str,
@@ -219,7 +193,6 @@ class ScrapeCoordinator:
             self.store.fail_item_task(job_id, item_key, reason)
 
     def _finish_job(self, job_id: str, *, total: int) -> None:
-        """Close the job row. A job with failed tiles is not plain "done" — it can be resumed."""
         if not self.failed_targets:
             self.store.finish_job(job_id, "done")
             return
@@ -231,11 +204,6 @@ class ScrapeCoordinator:
         )
 
     async def _require_apify_budget(self) -> None:
-        """Raise ApifyBudgetExhausted if the Apify account is over its monthly limit.
-
-        The answer is cached for a minute and guarded by a lock, so a job with
-        hundreds of tiles asks Apify once rather than once per tile.
-        """
         async with self._budget_lock:
             now = time.monotonic()
             stale = self._budget_checked_at is None or now - self._budget_checked_at >= BUDGET_CACHE_SECONDS
@@ -253,8 +221,6 @@ class ScrapeCoordinator:
             budget = {"error": str(exc)}
 
         if budget.get("error"):
-            # Unknown is not the same as exhausted: let the run proceed and let
-            # Apify itself reject it if the account really is over its limit.
             logger.warning("Could not check Apify budget (%s) — continuing", budget["error"])
             return True
 
@@ -268,5 +234,4 @@ class ScrapeCoordinator:
 
 
 def _item_key(target: ScrapeTarget) -> str:
-    """Stable identifier for one unit of work inside a job (used for resume)."""
     return f"{target.source.value}:{target.location}:{target.query}"
