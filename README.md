@@ -65,4 +65,4 @@ uv run pyright
 
 ## Background
 
-TODO (Apollos): why this exists and what I learned.
+Suplex started as a personal project. The company behind the idea has stopped, but the know-how remained, and offering it as an MCP server gets close to what we wanted to provide: something people play with themselves and turn into a setup that fits them, with whichever AI they prefer, whether Claude, GPT, Gemini or an open model. I built it in under a week and enjoyed it. I haven't run it in a while and don't plan to soon, since I have no one to cold email.
