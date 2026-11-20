@@ -9,14 +9,13 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import shutil
 import subprocess
 import uuid
 from typing import Any
 
 from suplex.outreach.mailbox import gws_env
-from suplex.outreach.playbook import get_playbook, get_playbook_summary, playbook_exists
+from suplex.outreach.playbook import get_playbook, get_playbook_summary
 from suplex.store.db import LeadStore
 
 logger = logging.getLogger(__name__)

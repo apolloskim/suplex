@@ -838,7 +838,7 @@ async def _dispatch(name: str, args: dict) -> dict:
             max_results=args.get("max_results", 100),
         )
         leads = await coordinator.run([target])
-        return {"count": len(leads), "leads": [l.model_dump() for l in leads[:20]]}
+        return {"count": len(leads), "leads": [lead.model_dump() for lead in leads[:20]]}
 
     elif name == "scrape_linkedin":
         extra: dict = {"mode": "full_with_email"}
@@ -875,12 +875,12 @@ async def _dispatch(name: str, args: dict) -> dict:
             extra=extra,
         )
         leads = await coordinator.run([target])
-        return {"count": len(leads), "leads": [l.model_dump() for l in leads[:20]]}
+        return {"count": len(leads), "leads": [lead.model_dump() for lead in leads[:20]]}
 
     elif name == "scrape_website":
         target = ScrapeTarget(source=LeadSource.PLAYWRIGHT, query=args["url"])
         leads = await coordinator.run([target])
-        return {"count": len(leads), "leads": [l.model_dump() for l in leads]}
+        return {"count": len(leads), "leads": [lead.model_dump() for lead in leads]}
 
     elif name == "run_scrape_plan":
         plan = await strategist.plan(
@@ -891,7 +891,7 @@ async def _dispatch(name: str, args: dict) -> dict:
         return {
             "plan": plan.model_dump(),
             "leads_scraped": len(leads),
-            "leads_preview": [l.model_dump() for l in leads[:10]],
+            "leads_preview": [lead.model_dump() for lead in leads[:10]],
         }
 
     elif name == "enrich_leads":
@@ -919,7 +919,7 @@ async def _dispatch(name: str, args: dict) -> dict:
         source = LeadSource(args["source"]) if args.get("source") else None
         vs = VerificationStatus(args["verification_status"]) if args.get("verification_status") else None
         leads = store.get_leads(source=source, verification_status=vs, limit=args.get("limit", 100))
-        return {"count": len(leads), "leads": [l.model_dump() for l in leads]}
+        return {"count": len(leads), "leads": [lead.model_dump() for lead in leads]}
 
     elif name == "get_stats":
         stats = {}

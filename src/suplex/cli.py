@@ -59,7 +59,7 @@ def profile(url: str) -> None:
     async def _run() -> None:
         click.echo(f"Scraping {url} for sender profile...", err=True)
         p = await scrape_sender_profile(url)
-        click.echo(f"Sender profile saved:", err=True)
+        click.echo("Sender profile saved:", err=True)
         click.echo(f"  Business: {p.business_name}", err=True)
         click.echo(f"  Description: {p.description[:120]}", err=True)
         click.echo(f"  Emails: {p.data.get('emails', [])}", err=True)
@@ -114,7 +114,7 @@ def setup() -> None:
             click.echo(f"  Run manually: claude mcp add suplex --scope user -- {suplex_bin} serve", err=True)
     else:
         if suplex_bin:
-            click.echo(f"  Claude CLI not found. Register manually:", err=True)
+            click.echo("  Claude CLI not found. Register manually:", err=True)
             click.echo(f"  claude mcp add suplex --scope user -- {suplex_bin} serve", err=True)
         else:
             click.echo("  suplex not found on PATH — install globally first: uv tool install suplex-ai", err=True)
@@ -159,7 +159,7 @@ def setup() -> None:
         if not value.strip():
             continue
 
-        click.echo(f"  Validating...", err=True)
+        click.echo("  Validating...", err=True)
         result = asyncio.run(validate_key(key, value.strip()))
         if result["valid"]:
             setattr(config, key, value.strip())
@@ -370,9 +370,9 @@ def scrape_linkedin(
     if years_at_company:
         extra["years_at_company"] = [y.strip() for y in years_at_company.split(",")]
     if company_hq:
-        extra["company_hq_locations"] = [l.strip() for l in company_hq.split(",")]
+        extra["company_hq_locations"] = [loc.strip() for loc in company_hq.split(",")]
     if profile_languages:
-        extra["profile_languages"] = [l.strip() for l in profile_languages.split(",")]
+        extra["profile_languages"] = [lang.strip() for lang in profile_languages.split(",")]
     if recently_changed_jobs:
         extra["recently_changed_jobs"] = True
     if only:
@@ -405,7 +405,7 @@ def scrape_website(url: str) -> None:
     coord = ScrapeCoordinator(store=store)
     target = ScrapeTarget(source=LeadSource.PLAYWRIGHT, query=url)
     leads = asyncio.run(coord.run([target]))
-    click.echo(json.dumps([l.model_dump() for l in leads], default=str, indent=2))
+    click.echo(json.dumps([lead.model_dump() for lead in leads], default=str, indent=2))
 
 
 # ---------------------------------------------------------------------------
@@ -526,7 +526,7 @@ def leads(source: str | None, status: str | None, limit: int) -> None:
     src = LeadSource(source) if source else None
     vs = VerificationStatus(status) if status else None
     results = store.get_leads(source=src, verification_status=vs, limit=limit)
-    click.echo(json.dumps([l.model_dump() for l in results], default=str, indent=2))
+    click.echo(json.dumps([lead.model_dump() for lead in results], default=str, indent=2))
 
 
 @cli.command()
@@ -559,7 +559,10 @@ def export(source: str | None, status: str | None, enriched: bool, output: str) 
     leads_list = store.get_leads(source=src, verification_status=vs, limit=999999)
 
     if enriched:
-        leads_list = [l for l in leads_list if l.raw_data.get("enrichment_data") or l.raw_data.get("clean_text")]
+        leads_list = [
+            lead for lead in leads_list
+            if lead.raw_data.get("enrichment_data") or lead.raw_data.get("clean_text")
+        ]
 
     if not leads_list:
         click.echo("No leads to export.", err=True)
@@ -666,11 +669,11 @@ def budget() -> None:
         click.echo(f"Error: {result['error']}", err=True)
         return
 
-    click.echo(f"Apify Budget:", err=True)
+    click.echo("Apify Budget:", err=True)
     click.echo(f"  Used:      ${result['used_usd']:.2f} / ${result['plan_limit_usd']:.2f}", err=True)
     click.echo(f"  Remaining: ${result['remaining_usd']:.2f}", err=True)
     if result["over_limit"]:
-        click.echo(f"  WARNING: Over monthly limit!", err=True)
+        click.echo("  WARNING: Over monthly limit!", err=True)
     click.echo(f"  Active runs: {result['active_runs']}", err=True)
     click.echo(f"  Cycle: {result['cycle_start'][:10]} to {result['cycle_end'][:10]}", err=True)
     click.echo(json.dumps(result, indent=2))

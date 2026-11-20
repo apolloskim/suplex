@@ -23,13 +23,13 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: uv sync --python ${{ matrix.python-version }} --extra dev
+        run: uv sync --locked --python ${{ matrix.python-version }} --extra dev
 
       - name: Lint
-        run: uv run ruff check src/
+        run: uv run ruff check src tests
 
-      - name: Type check imports
-        run: uv run python -c "from suplex.cli import cli; print('imports ok')"
+      - name: Smoke test CLI
+        run: uv run suplex --help
 
       - name: Test
         run: uv run pytest -x -q

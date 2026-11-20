@@ -13,7 +13,6 @@ import asyncio
 import logging
 import platform
 import shutil
-import sys
 from typing import Any
 
 import httpx
@@ -371,7 +370,6 @@ async def _start_daemon(runtime: str) -> bool:
     if system == "Darwin":
         # macOS: try Docker Desktop, OrbStack, colima.
         for app in ("Docker", "OrbStack"):
-            app_path = f"/Applications/{app}.app"
             try:
                 proc = await asyncio.create_subprocess_exec(
                     "open", "-a", app, "-g",  # -g = don't bring to foreground

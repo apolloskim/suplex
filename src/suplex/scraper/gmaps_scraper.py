@@ -12,7 +12,6 @@ Cooldown/pacing adapted from suplex-desktop:
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import random
 import re
