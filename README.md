@@ -1,59 +1,68 @@
 # suplex
 
-Agent-driven lead scraping, enrichment, and email verification.
+Lead scraping, enrichment and email verification, as a CLI and an MCP server for AI agents.
 
 ## Install
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/apolloskim/suplex/main/install.sh | bash
-suplex setup
-```
-
-Or via pip:
+Requires Python 3.12 or newer and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-pip install suplex-ai
-suplex setup
+git clone https://github.com/apolloskim/suplex.git
+cd suplex
+uv sync
+uv run playwright install chromium
+uv run suplex --help
 ```
-
-`suplex setup` installs the agent skill, registers the MCP server, sets up Playwright, and configures your API keys.
 
 ## What it does
 
-- **Scrape** leads from Google Maps (free via Playwright or paid via Apify) and LinkedIn (Apify)
-- **Enrich** with company website data, Google reviews, email verification, LinkedIn posts
-- **Auto-enrich** after every scrape by default
-- **Tile** across 241 countries — "Texas" becomes 1,025 city-level scrapes automatically
-- **Resume** killed or failed jobs — picks up where it left off
-- **Batch** multiple queries with auto-advancing watchdog (no polling needed)
-- **Export** to CSV with source/status/enrichment filters
-- **Budget-aware** — blocks Apify jobs when over limit
-- **MCP server** with 20+ tools for AI agents (Claude Code, Codex, Copilot, Cursor)
+- Scrapes business leads from Google Maps, with a local Playwright browser or an Apify actor.
+- Scrapes people from LinkedIn through an Apify actor.
+- Splits a state or country into one job per city, and resumes a job that stopped or failed.
+- Enriches each lead from its website, then finds and verifies an email address.
+- Tracks outreach campaigns and sends through the Google Workspace CLI.
+- Exposes all of it as MCP tools.
 
-## Quick start
+## Try it
+
+These need no accounts:
 
 ```bash
-suplex setup
-suplex scrape maps "dentist" -l "Austin, TX" -s playwright -n 20
-suplex scrape linkedin "dental hygienist" -l "Austin, TX" -n 20
-suplex export -o dentists.csv
+uv run suplex regions Japan
+uv run suplex regions --search Rotterdam
+uv run suplex stats
+uv run suplex jobs
 ```
 
-## Country-wide scraping
+Scraping, enrichment and outreach call live services. Keys are read from the environment: `APIFY_TOKEN` for Apify and `ANTHROPIC_API_KEY` for the planner. To see which are set:
 
 ```bash
-suplex regions Japan                                       # discover regions
-suplex scrape maps "dentist" -l US --only WY,VT -n 20     # start small
-suplex scrape maps "dentist" -l US --exclude WY,VT -n 20  # continue, skip done
-suplex resume <job_id>                                     # pick up interrupted jobs
+uv run suplex doctor
+```
+
+Each command lists its own options:
+
+```bash
+uv run suplex scrape maps --help
+uv run suplex scrape linkedin --help
+uv run suplex outreach --help
 ```
 
 ## For AI agents
 
-Suplex works as an MCP server and ships an agent skill:
-
 ```bash
-suplex serve
+uv run suplex serve
 ```
 
-See [SKILL.md](skills/suplex/SKILL.md) for the full agent workflow.
+This starts the MCP server on stdio. [AGENTS.md](AGENTS.md) is the guide for agents.
+
+## Development
+
+```bash
+uv run ruff check src
+uv run pyright
+```
+
+## Background
+
+TODO (Apollos): why this exists and what I learned.

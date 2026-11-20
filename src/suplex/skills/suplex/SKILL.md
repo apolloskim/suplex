@@ -358,7 +358,7 @@ Outreach uses the Google Workspace CLI (`gws`) to send emails from the user's ow
 
 ### Setup
 
-1. Install gws: `npm install -g @anthropic/gws` or `brew install gws`
+1. Install gws: `npm install -g @googleworkspace/cli` or `brew install googleworkspace-cli`
 2. Register a mailbox: `suplex mailbox add user@gmail.com`
 3. Authenticate: run the auth command printed by step 2
 4. Verify: `suplex mailbox verify <mailbox_id>`
