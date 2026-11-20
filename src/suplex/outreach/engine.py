@@ -1,10 +1,3 @@
-"""Outreach engine — draft, send, reply detection, follow-ups.
-
-Drafting is done by the agent (reads playbook + lead data, generates email).
-This module handles the structured operations: send via gws, check replies,
-manage follow-up queue, enforce rate limits and suppression.
-"""
-
 from __future__ import annotations
 
 import json
@@ -14,15 +7,20 @@ import subprocess
 import uuid
 from typing import Any
 
-from suplex.outreach.mailbox import gws_env
+from suplex.outreach.mailbox import GWS_INSTALL_HINT, gws_env
 from suplex.outreach.playbook import get_playbook, get_playbook_summary
 from suplex.store.db import LeadStore
 
 logger = logging.getLogger(__name__)
 
+OPT_OUT_SIGNALS = (
+    "stop", "unsubscribe", "opt out", "remove me", "not interested",
+    "no thanks", "no thank you", "don't email", "dont email",
+    "don't contact", "dont contact", "take me off", "leave me alone",
+)
+
 
 def preview_context(campaign_id: str, limit: int = 5, store: LeadStore | None = None) -> dict:
-    """Get everything the agent needs to draft emails: playbook, leads, campaign info."""
     store = store or LeadStore()
     campaign = store.get_campaign(campaign_id)
     if not campaign:
@@ -36,8 +34,7 @@ def preview_context(campaign_id: str, limit: int = 5, store: LeadStore | None = 
     if not leads:
         return {"error": "No eligible leads for this campaign"}
 
-    # Decode the JSON columns so the agent gets structured data, not strings.
-    enriched_leads = []
+    decoded_leads = []
     for lead in leads:
         lead_data = dict(lead)
         for column in ("raw_data", "enrichment_data"):
@@ -47,69 +44,76 @@ def preview_context(campaign_id: str, limit: int = 5, store: LeadStore | None = 
                     lead_data[column] = json.loads(value)
                 except json.JSONDecodeError:
                     pass
-        enriched_leads.append(lead_data)
+        decoded_leads.append(lead_data)
 
     return {
         "campaign": campaign,
         "playbook": playbook,
         "playbook_summary": get_playbook_summary(),
-        "leads": enriched_leads,
+        "leads": decoded_leads,
         "physical_address": campaign.get("physical_address", ""),
     }
 
 
-def save_drafts(drafts: list[dict], campaign_id: str, mailbox_id: str,
-                store: LeadStore | None = None) -> list[dict]:
-    """Save agent-generated drafts to the outreach table.
-
-    Each draft: {"lead_id": int, "subject": str, "body": str, "step": int}
-    """
+def save_drafts(
+    drafts: list[dict], campaign_id: str, mailbox_id: str, store: LeadStore | None = None,
+) -> list[dict]:
     store = store or LeadStore()
-    saved = []
-    for draft in drafts:
-        outreach_id = uuid.uuid4().hex[:12]
-        lead_id = draft["lead_id"]
+    if not store.get_campaign(campaign_id):
+        return [{"skipped": f"Campaign {campaign_id} not found"}]
+    if not store.get_mailbox(mailbox_id):
+        return [{"skipped": f"Mailbox {mailbox_id} not found"}]
 
-        # Check suppression.
-        lead_email = draft.get("email")
-        if lead_email and store.is_suppressed(lead_email):
-            logger.info("Skipping suppressed email: %s", lead_email)
+    results = []
+    for draft in drafts:
+        lead_id = draft["lead_id"]
+        step = draft.get("step", 1)
+        skipped = _draft_skip_reason(store, campaign_id, lead_id, step)
+        if skipped:
+            logger.info("Draft for lead %s skipped: %s", lead_id, skipped)
+            results.append({"lead_id": lead_id, "skipped": skipped})
             continue
 
+        outreach_id = uuid.uuid4().hex[:12]
         store.create_outreach(
             outreach_id=outreach_id,
             campaign_id=campaign_id,
             lead_id=lead_id,
             mailbox_id=mailbox_id,
-            step=draft.get("step", 1),
+            step=step,
             subject=draft["subject"],
             body=draft["body"],
         )
-        saved.append({"outreach_id": outreach_id, "lead_id": lead_id, "subject": draft["subject"]})
+        results.append({"outreach_id": outreach_id, "lead_id": lead_id, "subject": draft["subject"]})
 
-    return saved
+    return results
+
+
+def _draft_skip_reason(store: LeadStore, campaign_id: str, lead_id: int, step: int) -> str | None:
+    lead = store.get_lead(lead_id)
+    if lead is None:
+        return "lead not found"
+    if not lead.email:
+        return "lead has no email"
+    if store.is_suppressed(lead.email):
+        return "email is on the suppression list"
+    if store.outreach_exists(campaign_id, lead_id, step):
+        return f"step {step} already exists for this lead in this campaign"
+    return None
 
 
 def approve_drafts(outreach_ids: list[str], store: LeadStore | None = None) -> int:
-    """Approve selected drafts for sending."""
     store = store or LeadStore()
-    approved = 0
-    for oid in outreach_ids:
-        store.approve_outreach(oid)
-        approved += 1
-    return approved
+    return sum(1 for outreach_id in outreach_ids if store.approve_outreach(outreach_id))
 
 
 def approve_all_drafts(campaign_id: str, store: LeadStore | None = None) -> int:
-    """Approve all drafts in a campaign."""
     store = store or LeadStore()
     drafts = store.get_outreach_drafts(campaign_id, limit=1000)
     return approve_drafts([d["id"] for d in drafts], store=store)
 
 
-def send_approved(campaign_id: str, limit: int = 10,
-                  store: LeadStore | None = None) -> dict:
-    """Send approved outreach emails via gws. Respects daily limits and suppression."""
+def send_approved(campaign_id: str, limit: int = 10, store: LeadStore | None = None) -> dict:
     store = store or LeadStore()
     approved = store.get_approved_outreach(campaign_id, limit=limit)
     if not approved:
@@ -117,7 +121,7 @@ def send_approved(campaign_id: str, limit: int = 10,
 
     gws_bin = shutil.which("gws")
     if not gws_bin:
-        return {"error": "gws CLI not found"}
+        return {"error": GWS_INSTALL_HINT}
 
     sent = 0
     errors = 0
@@ -128,30 +132,30 @@ def send_approved(campaign_id: str, limit: int = 10,
         mailbox = store.get_mailbox(mailbox_id)
         if not mailbox:
             logger.error("Mailbox %s not found for outreach %s", mailbox_id, outreach["id"])
+            store.mark_outreach_failed(outreach["id"], f"Mailbox {mailbox_id} not found")
             errors += 1
             continue
 
-        # Check daily limit.
         sends_today = store.get_mailbox_sends_today(mailbox_id)
         if sends_today >= mailbox["daily_limit"]:
             logger.warning("Daily limit reached for %s (%d/%d)", mailbox["email"], sends_today, mailbox["daily_limit"])
             skipped += 1
             continue
 
-        # Check suppression.
         if store.is_suppressed(outreach["lead_email"]):
             logger.info("Suppressed: %s", outreach["lead_email"])
             skipped += 1
             continue
 
-        # Send via gws.
         result = _send_via_gws(
             gws_bin=gws_bin,
             mailbox=mailbox,
             to=outreach["lead_email"],
             subject=outreach["subject"],
             body=outreach["body"],
-            thread_id=outreach.get("gmail_thread_id"),  # For follow-ups in same thread.
+            reply_to_message_id=store.get_previous_sent_message_id(
+                campaign_id, outreach["lead_id"], outreach["step"],
+            ),
         )
 
         if result.get("error"):
@@ -169,7 +173,6 @@ def send_approved(campaign_id: str, limit: int = 10,
 
 
 def check_replies(mailbox_id: str, store: LeadStore | None = None) -> dict:
-    """Check for replies to sent outreach emails via gws."""
     store = store or LeadStore()
     mailbox = store.get_mailbox(mailbox_id)
     if not mailbox:
@@ -177,7 +180,7 @@ def check_replies(mailbox_id: str, store: LeadStore | None = None) -> dict:
 
     gws_bin = shutil.which("gws")
     if not gws_bin:
-        return {"error": "gws CLI not found"}
+        return {"error": GWS_INSTALL_HINT}
 
     sent_threads = store.get_sent_threads(mailbox_id)
     if not sent_threads:
@@ -185,47 +188,54 @@ def check_replies(mailbox_id: str, store: LeadStore | None = None) -> dict:
 
     env = gws_env(mailbox)
     replies_found = 0
+    errors = 0
 
     for thread_info in sent_threads:
         thread_id = thread_info["gmail_thread_id"]
-        if not thread_id:
+        messages = _fetch_thread_messages(gws_bin, env, thread_id)
+        if messages is None:
+            errors += 1
             continue
 
-        # Get thread messages.
-        try:
-            result = subprocess.run(
-                [gws_bin, "gmail", "users.threads", "get", "--userId", "me", "--id", thread_id,
-                 "--format", "json"],
-                capture_output=True, text=True, env=env, timeout=15,
-            )
-            if result.returncode != 0:
-                continue
+        reply = _first_reply(messages, our_message_ids=store.get_thread_message_ids(thread_id))
+        if reply is None:
+            continue
+        store.mark_outreach_replied(thread_info["id"])
+        replies_found += 1
+        _check_opt_out(reply.get("snippet", ""), thread_info["lead_email"], store)
 
-            thread_data = json.loads(result.stdout)
-            messages = thread_data.get("messages", [])
+    return {"replies": replies_found, "checked": len(sent_threads), "errors": errors}
 
-            # Check if there's a reply (message not from us).
-            for msg in messages:
-                msg_id = msg.get("id", "")
-                if msg_id == thread_info["gmail_message_id"]:
-                    continue  # Our sent message.
-                # This is a reply.
-                store.mark_outreach_replied(thread_info["id"])
-                replies_found += 1
 
-                # Check for opt-out in reply.
-                snippet = msg.get("snippet", "").lower()
-                _check_opt_out(snippet, thread_info["lead_email"], store)
-                break
+def _fetch_thread_messages(gws_bin: str, env: dict, thread_id: str) -> list[dict] | None:
+    params = json.dumps({"userId": "me", "id": thread_id, "format": "metadata"})
+    try:
+        result = subprocess.run(
+            [gws_bin, "gmail", "users", "threads", "get", "--params", params],
+            capture_output=True, text=True, env=env, timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.warning("Could not read thread %s: %s", thread_id, exc)
+        return None
+    if result.returncode != 0:
+        logger.warning("gws failed reading thread %s: %s", thread_id, result.stderr[:300])
+        return None
+    try:
+        return json.loads(result.stdout).get("messages", [])
+    except (json.JSONDecodeError, AttributeError):
+        logger.warning("gws returned unreadable output for thread %s", thread_id)
+        return None
 
-        except Exception as e:
-            logger.warning("Error checking thread %s: %s", thread_id, e)
 
-    return {"replies": replies_found, "checked": len(sent_threads)}
+def _first_reply(messages: list[dict], *, our_message_ids: set[str]) -> dict | None:
+    for message in messages:
+        if message.get("id") in our_message_ids or "SENT" in message.get("labelIds", []):
+            continue
+        return message
+    return None
 
 
 def get_due_followups(campaign_id: str, store: LeadStore | None = None) -> list[dict]:
-    """Get leads due for follow-up in a campaign."""
     store = store or LeadStore()
     return store.get_outreach_due_followups(campaign_id)
 
@@ -236,48 +246,32 @@ def _send_via_gws(
     to: str,
     subject: str,
     body: str,
-    thread_id: str | None = None,
+    reply_to_message_id: str | None = None,
 ) -> dict[str, Any]:
-    """Send an email via gws gmail +send."""
-    env = gws_env(mailbox)
-
-    cmd = [gws_bin, "gmail", "+send",
-           "--to", to,
-           "--subject", subject,
-           "--body", body]
-
-    if thread_id:
-        cmd.extend(["--threadId", thread_id])
+    if reply_to_message_id:
+        cmd = [gws_bin, "gmail", "+reply-all", "--message-id", reply_to_message_id, "--body", body]
+    else:
+        cmd = [gws_bin, "gmail", "+send", "--to", to, "--subject", subject, "--body", body]
 
     try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, env=env, timeout=30,
-        )
-        if result.returncode != 0:
-            return {"error": result.stderr[:300]}
-
-        # Parse gws JSON output for message/thread IDs.
-        try:
-            return json.loads(result.stdout)
-        except json.JSONDecodeError:
-            return {"id": "", "threadId": ""}
-
+        result = subprocess.run(cmd, capture_output=True, text=True, env=gws_env(mailbox), timeout=30)
     except subprocess.TimeoutExpired:
         return {"error": "gws send timed out"}
-    except Exception as e:
-        return {"error": str(e)}
+    except OSError as exc:
+        return {"error": str(exc)}
+
+    if result.returncode != 0:
+        return {"error": result.stderr[:300] or f"gws exited with status {result.returncode}"}
+
+    try:
+        parsed = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return {"id": "", "threadId": ""}
+    return parsed if isinstance(parsed, dict) else {"id": "", "threadId": ""}
 
 
 def _check_opt_out(snippet: str, email: str, store: LeadStore) -> None:
-    """Check if a reply contains opt-out signals and suppress if so."""
-    opt_out_signals = [
-        "stop", "unsubscribe", "opt out", "remove me", "not interested",
-        "no thanks", "no thank you", "don't email", "dont email",
-        "don't contact", "dont contact", "take me off", "leave me alone",
-    ]
-    snippet_lower = snippet.lower()
-    for signal in opt_out_signals:
-        if signal in snippet_lower:
-            store.add_suppression(email, reason="opt_out_reply", source="auto_detected")
-            logger.info("Auto-suppressed %s (opt-out detected in reply)", email)
-            return
+    text = snippet.lower()
+    if any(signal in text for signal in OPT_OUT_SIGNALS):
+        store.add_suppression(email, reason="opt_out_reply", source="auto_detected")
+        logger.info("Auto-suppressed %s (opt-out detected in reply)", email)

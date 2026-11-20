@@ -1014,8 +1014,8 @@ async def _dispatch(name: str, args: dict) -> dict:
     # --- Outreach tools ---
 
     elif name == "get_outreach_playbook":
-        from suplex.outreach.playbook import get_playbook, get_playbook_summary, playbook_exists
-        if not playbook_exists():
+        from suplex.outreach.playbook import get_playbook, get_playbook_summary
+        if get_playbook() is None:
             return {"exists": False, "message": "No playbook yet. Walk the user through creating one."}
         return {"exists": True, "summary": get_playbook_summary(), "content": get_playbook()}
 
@@ -1034,6 +1034,8 @@ async def _dispatch(name: str, args: dict) -> dict:
 
     elif name == "create_campaign":
         import uuid as _uuid
+        if not store.get_mailbox(args["mailbox_id"]):
+            return {"error": f"Mailbox {args['mailbox_id']} not found. Use list_mailboxes."}
         campaign_id = _uuid.uuid4().hex[:12]
         filter_json = {}
         if args.get("source_filter"):

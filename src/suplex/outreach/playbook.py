@@ -94,7 +94,3 @@ def update_playbook(content: str) -> Path:
     PLAYBOOK_DIR.mkdir(parents=True, exist_ok=True)
     PLAYBOOK_PATH.write_text(content)
     return PLAYBOOK_PATH
-
-
-def playbook_exists() -> bool:
-    return PLAYBOOK_PATH.exists()

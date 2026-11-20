@@ -359,6 +359,11 @@ class LeadStore:
             rows = conn.execute(query, params).fetchall()
             return [self._row_to_lead(row) for row in rows]
 
+    def get_lead(self, lead_id: int) -> Lead | None:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM leads WHERE id = ?", (lead_id,)).fetchone()
+            return self._row_to_lead(row) if row else None
+
     def get_unverified_emails(self, limit: int = 100) -> list[Lead]:
         with self._conn() as conn:
             rows = conn.execute(
@@ -1224,12 +1229,40 @@ class LeadStore:
                  utcnow().isoformat()),
             )
 
-    def approve_outreach(self, outreach_id: str) -> None:
+    def approve_outreach(self, outreach_id: str) -> bool:
         with self._conn() as conn:
-            conn.execute(
+            cur = conn.execute(
                 "UPDATE outreach SET status = 'approved', approved_at = ? WHERE id = ? AND status = 'draft'",
                 (utcnow().isoformat(), outreach_id),
             )
+            return cur.rowcount > 0
+
+    def outreach_exists(self, campaign_id: str, lead_id: int, step: int) -> bool:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM outreach WHERE campaign_id = ? AND lead_id = ? AND step = ?",
+                (campaign_id, lead_id, step),
+            ).fetchone()
+            return row is not None
+
+    def get_previous_sent_message_id(self, campaign_id: str, lead_id: int, step: int) -> str | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT gmail_message_id FROM outreach "
+                "WHERE campaign_id = ? AND lead_id = ? AND step < ? "
+                "AND status IN ('sent', 'replied') AND gmail_message_id != '' "
+                "ORDER BY step DESC LIMIT 1",
+                (campaign_id, lead_id, step),
+            ).fetchone()
+            return row["gmail_message_id"] if row else None
+
+    def get_thread_message_ids(self, gmail_thread_id: str) -> set[str]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT gmail_message_id FROM outreach WHERE gmail_thread_id = ? AND gmail_message_id != ''",
+                (gmail_thread_id,),
+            ).fetchall()
+            return {row["gmail_message_id"] for row in rows}
 
     def mark_outreach_sent(self, outreach_id: str, gmail_thread_id: str,
                            gmail_message_id: str) -> None:
@@ -1289,8 +1322,12 @@ class LeadStore:
             rows = conn.execute(
                 "SELECT o.*, l.name as lead_name, l.email as lead_email, l.company as lead_company "
                 "FROM outreach o JOIN leads l ON o.lead_id = l.id "
-                "WHERE o.campaign_id = ? AND o.status = 'sent' AND o.replied_at IS NULL "
-                "AND o.step < ? "
+                "WHERE o.campaign_id = ? AND o.status = 'sent' AND o.step < ? "
+                "AND NOT EXISTS (SELECT 1 FROM outreach later WHERE later.campaign_id = o.campaign_id "
+                "  AND later.lead_id = o.lead_id AND later.step > o.step) "
+                "AND NOT EXISTS (SELECT 1 FROM outreach r WHERE r.campaign_id = o.campaign_id "
+                "  AND r.lead_id = o.lead_id AND r.status = 'replied') "
+                "AND LOWER(l.email) NOT IN (SELECT email FROM suppression_list) "
                 "ORDER BY o.sent_at",
                 (campaign_id, max_step),
             ).fetchall()
@@ -1331,14 +1368,16 @@ class LeadStore:
                 "SELECT o.id, o.lead_id, o.gmail_thread_id, o.gmail_message_id, "
                 "l.email as lead_email "
                 "FROM outreach o JOIN leads l ON o.lead_id = l.id "
-                "WHERE o.mailbox_id = ? AND o.status = 'sent' AND o.gmail_thread_id IS NOT NULL",
+                "WHERE o.mailbox_id = ? AND o.status = 'sent' AND o.gmail_thread_id != ''",
                 (mailbox_id,),
             ).fetchall()
             return [dict(r) for r in rows]
 
     def is_suppressed(self, email: str) -> bool:
         with self._conn() as conn:
-            row = conn.execute("SELECT 1 FROM suppression_list WHERE email = ?", (email,)).fetchone()
+            row = conn.execute(
+                "SELECT 1 FROM suppression_list WHERE email = ?", (email.strip().lower(),),
+            ).fetchone()
             return row is not None
 
     def add_suppression(self, email: str, reason: str = "opt_out", source: str | None = None) -> None:
@@ -1346,7 +1385,7 @@ class LeadStore:
             conn.execute(
                 "INSERT OR IGNORE INTO suppression_list (email, reason, source, created_at) "
                 "VALUES (?, ?, ?, ?)",
-                (email, reason, source, utcnow().isoformat()),
+                (email.strip().lower(), reason, source, utcnow().isoformat()),
             )
 
     def get_eligible_leads(self, campaign_id: str, limit: int = 20) -> list[dict]:
@@ -1362,7 +1401,7 @@ class LeadStore:
                 SELECT l.* FROM leads l
                 WHERE l.email IS NOT NULL
                 AND l.verification_status IN ('valid', 'catch_all')
-                AND l.email NOT IN (SELECT email FROM suppression_list)
+                AND LOWER(l.email) NOT IN (SELECT email FROM suppression_list)
                 AND l.id NOT IN (SELECT lead_id FROM outreach WHERE campaign_id = ?)
             """
             params: list = [campaign_id]

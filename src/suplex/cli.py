@@ -1100,12 +1100,14 @@ def campaign() -> None:
 @click.option("--mailbox", "-m", required=True, help="Mailbox ID to send from")
 @click.option("--address", "-a", required=True, help="Physical address (CAN-SPAM)")
 @click.option("--source", "-s", default=None, help="Lead source filter (google_maps, linkedin)")
-@click.option("--enriched-only", is_flag=True, default=True, help="Only enriched leads")
+@click.option("--enriched-only/--all-leads", default=True, help="Only enriched leads (default) or every eligible lead")
 def campaign_create(name: str, mailbox: str, address: str, source: str | None, enriched_only: bool) -> None:
     """Create a new outreach campaign."""
     import uuid
     campaign_id = uuid.uuid4().hex[:12]
     store = LeadStore()
+    if not store.get_mailbox(mailbox):
+        raise click.ClickException(f"Mailbox {mailbox} not found. See: suplex mailbox list")
 
     filter_json = {}
     if source:
