@@ -186,32 +186,21 @@ class EnrichmentPipeline:
         # Detect catch-all domain first.
         is_catch_all = await self._is_catch_all(domain)
 
-        # Determine if this is a person (LinkedIn) or business (Google Maps).
-        is_person = lead.source == LeadSource.LINKEDIN and self._has_person_name(lead.name)
-
-        if is_person:
-            # Try person name patterns.
-            patterns = PERSON_PATTERNS
-            parts = lead.name.strip().split()
-            first = re.sub(r"[^a-z]", "", parts[0].lower())
-            last = re.sub(r"[^a-z]", "", parts[-1].lower())
-            if not first or not last:
-                return None
-            f = first[0]
-            candidates = [p.format(first=first, last=last, f=f, domain=domain) for p in patterns]
-        else:
-            # Business: try role-based addresses.
-            candidates = [p.format(domain=domain) for p in ROLE_PATTERNS]
-
-        # If site already has emails, use the pattern from those to prioritize.
-        if site_emails:
-            pattern = self._detect_pattern(site_emails[0], domain)
-            if pattern and is_person:
-                # Reorder: put the detected pattern first.
-                detected = pattern.format(first=first, last=last, f=f, domain=domain)
+        person = self._person_name_parts(lead) if lead.source == LeadSource.LINKEDIN else None
+        if person:
+            first, last = person
+            fields = {"first": first, "last": last, "f": first[0], "domain": domain}
+            candidates = [p.format(**fields) for p in PERSON_PATTERNS]
+            pattern = self._detect_pattern(site_emails[0], domain) if site_emails else None
+            if pattern:
+                detected = pattern.format(**fields)
                 if detected in candidates:
                     candidates.remove(detected)
                     candidates.insert(0, detected)
+        elif lead.source == LeadSource.LINKEDIN and self._has_person_name(lead.name):
+            return None
+        else:
+            candidates = [p.format(domain=domain) for p in ROLE_PATTERNS]
 
         if is_catch_all:
             # Catch-all domain: SMTP verification is useless for guessed emails.
@@ -245,6 +234,15 @@ class EnrichmentPipeline:
             return is_ca
         except Exception:
             return False
+
+    @classmethod
+    def _person_name_parts(cls, lead: Lead) -> tuple[str, str] | None:
+        if not lead.name or not cls._has_person_name(lead.name):
+            return None
+        parts = lead.name.strip().split()
+        first = re.sub(r"[^a-z]", "", parts[0].lower())
+        last = re.sub(r"[^a-z]", "", parts[-1].lower())
+        return (first, last) if first and last else None
 
     @staticmethod
     def _has_person_name(name: str | None) -> bool:

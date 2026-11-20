@@ -72,7 +72,7 @@ class ApifyScraper:
         country = target.extra.get("tile_country", "")
         polygon = None
         if country == "US" and state:
-            polygon = _get_state_polygon(STATE_NAMES.get(state, state))
+            polygon = _get_state_polygon(STATE_NAMES.get(state) or state)
 
         if polygon:
             run_input["customGeolocation"] = polygon

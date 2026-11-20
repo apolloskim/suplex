@@ -246,9 +246,10 @@ class ScrapeCoordinator:
                 raise ApifyBudgetExhausted("Apify monthly budget is used up")
 
     async def _fetch_budget_ok(self) -> bool:
+        budget: dict
         try:
             budget = await get_apify_budget(self._apify_token)
-        except Exception as exc:  # Never let a budget lookup take the whole scrape down.
+        except Exception as exc:
             budget = {"error": str(exc)}
 
         if budget.get("error"):

@@ -800,7 +800,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         return [TextContent(type="text", text=json.dumps({"error": str(e)}))]
 
 
-async def _dispatch(name: str, args: dict) -> dict:
+async def _dispatch(name: str, args: dict) -> dict | list:
     if name == "setup_status":
         status = get_setup_status()
         status["sender_profile"] = SenderProfile.load().summary()
@@ -936,19 +936,19 @@ async def _dispatch(name: str, args: dict) -> dict:
         from suplex.jobs import launch_scrape_job, launch_enrich_job
         job_type = args["type"]
         if job_type == "scrape_maps":
-            extra = []
+            extra_args: list[str] = []
             scraper = args.get("scraper", "auto")
             if scraper != "auto":
-                extra.extend(["-s", scraper])
+                extra_args.extend(["-s", scraper])
             if args.get("max_results"):
-                extra.extend(["-n", str(args["max_results"])])
+                extra_args.extend(["-n", str(args["max_results"])])
             if args.get("only"):
-                extra.extend(["--only", args["only"]])
+                extra_args.extend(["--only", args["only"]])
             if args.get("exclude"):
-                extra.extend(["--exclude", args["exclude"]])
-            return launch_scrape_job("maps", args.get("query", ""), args.get("location", ""), extra_args=extra)
+                extra_args.extend(["--exclude", args["exclude"]])
+            return launch_scrape_job("maps", args.get("query", ""), args.get("location", ""), extra_args=extra_args)
         elif job_type == "scrape_linkedin":
-            extra = []
+            extra_args: list[str] = []
             _BG_FLAG_MAP = {
                 "titles": "-t", "past_titles": "--past-titles",
                 "companies": "-c", "past_companies": "--past-companies",
@@ -961,16 +961,16 @@ async def _dispatch(name: str, args: dict) -> dict:
             }
             for key, flag in _BG_FLAG_MAP.items():
                 if args.get(key):
-                    extra.extend([flag, args[key]])
+                    extra_args.extend([flag, args[key]])
             if args.get("recently_changed_jobs"):
-                extra.append("--recently-changed-jobs")
+                extra_args.append("--recently-changed-jobs")
             if args.get("max_results"):
-                extra.extend(["-n", str(args["max_results"])])
+                extra_args.extend(["-n", str(args["max_results"])])
             if args.get("only"):
-                extra.extend(["--only", args["only"]])
+                extra_args.extend(["--only", args["only"]])
             if args.get("exclude"):
-                extra.extend(["--exclude", args["exclude"]])
-            return launch_scrape_job("linkedin", args.get("query", ""), args.get("location", ""), extra_args=extra)
+                extra_args.extend(["--exclude", args["exclude"]])
+            return launch_scrape_job("linkedin", args.get("query", ""), args.get("location", ""), extra_args=extra_args)
         elif job_type == "enrich":
             return launch_enrich_job(limit=args.get("limit", 100), linkedin_posts=args.get("linkedin_posts", 1))
         else:

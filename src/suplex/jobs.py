@@ -46,7 +46,7 @@ def launch_scrape_job(
     cmd = [*_suplex_cmd(), "scrape", source, query, "-l", location, *(extra_args or [])]
 
     # Pre-create job row with meta so resume can reconstruct the command.
-    meta = {"type": "scrape", "source": source, "query": query, "location": location}
+    meta: dict[str, object] = {"type": "scrape", "source": source, "query": query, "location": location}
     if extra_args:
         meta["extra_args"] = extra_args
     store = LeadStore()
@@ -786,11 +786,11 @@ def _runtime_meta_from_process(proc: subprocess.Popen, log_path: Path) -> dict:
 
 
 def _normalize_runtime_value(value: object) -> int | None:
-    if value in (None, ""):
+    if isinstance(value, bool) or not isinstance(value, (int, str)) or value == "":
         return None
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except ValueError:
         return None
 
 

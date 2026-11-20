@@ -5,7 +5,7 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
 from suplex.clock import utcnow
 from suplex.models import Lead, LeadSource, VerificationStatus
@@ -808,7 +808,7 @@ class LeadStore:
 
     def upsert_reddit_post(
         self,
-        post: dict[str, object],
+        post: dict[str, Any],
         *,
         seen_at: str,
         query: str,

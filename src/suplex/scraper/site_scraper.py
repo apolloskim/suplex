@@ -314,7 +314,7 @@ class SiteScraper:
         data.title = data.title or (title_node.text().strip() if title_node else "")
 
         desc_node = tree.css_first('meta[name="description"]')
-        data.description = data.description or (desc_node.attrs.get("content", "") if desc_node else "")
+        data.description = data.description or (_attr(desc_node, "content") if desc_node else "")
 
         # --- Structured metadata (JSON-LD, OpenGraph) ---
         metadata = extruct.extract(html, base_url=url, syntaxes=["json-ld", "opengraph", "microdata"])
@@ -358,7 +358,7 @@ class SiteScraper:
 
         # --- Emails ---
         for mailto in tree.css('a[href^="mailto:"]'):
-            email = mailto.attrs.get("href", "").replace("mailto:", "").split("?")[0].strip()
+            email = _attr(mailto, "href").replace("mailto:", "").split("?")[0].strip()
             if email:
                 data.emails.append(email)
         data.emails.extend(EMAIL_RE.findall(data.raw_text))
@@ -368,7 +368,7 @@ class SiteScraper:
         # --- Phones (prioritize tel: links, then regex) ---
         tel_phones: list[str] = []
         for tel in tree.css('a[href^="tel:"]'):
-            phone = tel.attrs.get("href", "").replace("tel:", "").strip()
+            phone = _attr(tel, "href").replace("tel:", "").strip()
             if phone:
                 tel_phones.append(phone)
         regex_phones = PHONE_RE.findall(data.raw_text)
@@ -391,7 +391,7 @@ class SiteScraper:
 
         # --- Social links ---
         for link in tree.css("a[href]"):
-            href = link.attrs.get("href", "")
+            href = _attr(link, "href")
             try:
                 domain = strip_www(urlparse(href).netloc)
                 if domain in SOCIAL_DOMAINS:
@@ -467,7 +467,7 @@ class SiteScraper:
                     post: dict[str, str] = {"title": title_el.text().strip()[:200]}
                     link_el = node.css_first("a[href]")
                     if link_el:
-                        post["url"] = urljoin(url, link_el.attrs.get("href", ""))
+                        post["url"] = urljoin(url, _attr(link_el, "href"))
                     if date_el:
                         post["date"] = date_el.text().strip()
                     data.blog_posts.append(post)
@@ -503,32 +503,32 @@ class SiteScraper:
         for selector in ('[class*="logo"]', '[class*="client"]', '[class*="partner"]', '[class*="trusted"]'):
             for node in tree.css(selector):
                 for img in node.css("img[alt]"):
-                    alt = img.attrs.get("alt", "").strip()
+                    alt = _attr(img, "alt").strip()
                     if alt and len(alt) < 100 and alt not in data.customer_logos:
                         data.customer_logos.append(alt)
 
         # --- Tech stack ---
         for script in tree.css("script[src]"):
-            src = script.attrs.get("src", "").lower()
+            src = _attr(script, "src").lower()
             for tech, patterns in _TECH_PATTERNS.items():
                 if any(p in src for p in patterns) and tech not in data.tech_stack:
                     data.tech_stack.append(tech)
         gen = tree.css_first('meta[name="generator"]')
         if gen:
-            val = gen.attrs.get("content", "")
+            val = _attr(gen, "content")
             if val and val not in data.tech_stack:
                 data.tech_stack.append(val)
 
         # --- Competitor/tool mentions ---
         for node in tree.css('[class*="integration"]'):
             for img in node.css("img[alt]"):
-                alt = img.attrs.get("alt", "").strip()
+                alt = _attr(img, "alt").strip()
                 if alt and alt not in data.tools_mentioned:
                     data.tools_mentioned.append(alt)
 
         # --- Internal links for further crawling ---
         for a in tree.css("a[href]"):
-            href = a.attrs.get("href", "")
+            href = _attr(a, "href")
             text = a.text().strip().lower()
             data._links.append({"href": href, "text": text})
 
@@ -729,6 +729,10 @@ class SiteScraper:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _attr(node: Any, name: str) -> str:
+    return node.attrs.get(name) or ""
+
 
 def _clean_emails(emails: list[str]) -> list[str]:
     seen: set[str] = set()

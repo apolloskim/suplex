@@ -411,5 +411,4 @@ async def _run_cmd(*args: str) -> int:
     proc = await asyncio.create_subprocess_exec(
         *args, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
     )
-    await proc.wait()
-    return proc.returncode
+    return await proc.wait()
