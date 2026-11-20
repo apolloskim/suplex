@@ -88,6 +88,19 @@ def _parse_rpc_response(body: str) -> tuple[list[dict], int | None]:
     return reviews, total
 
 
+_endpoint_warning_logged = False
+
+
+def _warn_endpoint_unavailable(status: int) -> None:
+    global _endpoint_warning_logged
+    if _endpoint_warning_logged:
+        return
+    _endpoint_warning_logged = True
+    logger.warning(
+        "Google Maps review endpoint returned HTTP %d; reviews will be missing from this run", status,
+    )
+
+
 async def scrape_reviews(
     context: BrowserContext,
     page: Page,
@@ -134,7 +147,7 @@ async def scrape_reviews(
         try:
             resp = await context.request.get(url, headers={"Referer": page.url})
             if resp.status != 200:
-                logger.debug("RPC API returned %d for sort=%d", resp.status, sort_mode)
+                _warn_endpoint_unavailable(resp.status)
                 continue
 
             body = await resp.text()
