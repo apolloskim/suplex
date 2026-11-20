@@ -161,16 +161,13 @@ def setup() -> None:
     config.save()
     click.echo("\nConfig saved to ~/.config/suplex/config.toml", err=True)
 
-    if not config.reacher_api_key:
-        click.echo("\n  No Reacher API key — checking Docker for free self-hosted verification...", err=True)
-        _check_reacher_docker()
+    click.echo("", err=True)
+    _offer_verification_setup(show_status=True)
 
 
 @cli.command()
 def doctor() -> None:
-    """Check health of all services (API keys, Docker, Reacher)."""
-    import shutil
-
+    """Check health of all services (API keys, email verification, database)."""
     from suplex.config import Config
     from suplex.setup import SERVICES
 
@@ -182,13 +179,8 @@ def doctor() -> None:
         status = "ok" if configured else ("MISSING" if meta["required"] else "skipped")
         click.echo(f"  {meta['name']}: {status}", err=True)
 
-    click.echo("\nDocker:", err=True)
-    if shutil.which("docker"):
-        click.echo("  docker: found", err=True)
-        _check_reacher_docker()
-    else:
-        click.echo("  docker: not found", err=True)
-        click.echo("  Install: https://docs.docker.com/get-docker/", err=True)
+    click.echo("", err=True)
+    _offer_verification_setup(show_status=True)
 
     click.echo("\nDatabase:", err=True)
     store = LeadStore()
@@ -196,46 +188,82 @@ def doctor() -> None:
     click.echo(f"  leads: {store.count()}", err=True)
 
 
-def _check_reacher_docker() -> None:
-    import shutil
-    import subprocess
+def _is_interactive() -> bool:
+    return sys.stdin.isatty() and sys.stderr.isatty() and not os.environ.get("SUPLEX_JOB_ID")
 
-    if not shutil.which("docker"):
-        click.echo("  Docker not installed.", err=True)
-        click.echo("  Install Docker: https://docs.docker.com/get-docker/", err=True)
-        click.echo("  Then run: suplex doctor", err=True)
+
+def _offer_verification_setup(*, show_status: bool = False) -> None:
+    from suplex.config import Config
+    from suplex.verify import reacher_setup as rs
+
+    config = Config.load()
+    if asyncio.run(rs.ping(rs.local_url(config))):
+        if show_status:
+            click.echo(f"Email verification: ready (Reacher at {rs.local_url(config)})", err=True)
         return
 
-    result = subprocess.run(
-        ["docker", "inspect", "suplex-reacher"],
-        capture_output=True,
-    )
+    undecided = rs.needs_decision(config)
+    if show_status and not undecided:
+        click.echo(f"Email verification: {rs.CHOICE_LABELS[config.verification_setup]}", err=True)
+        if not (_is_interactive() and click.confirm("  Change this?", default=False, err=True)):
+            return
+    elif not undecided:
+        return
+    elif not _is_interactive():
+        if show_status:
+            click.echo(f"Email verification: {rs.CHOICE_LABELS['']}. Run `suplex doctor` in a terminal.", err=True)
+        return
 
-    if result.returncode == 0:
-        result = subprocess.run(
-            ["docker", "inspect", "-f", "{{.State.Running}}", "suplex-reacher"],
-            capture_output=True,
-            text=True,
-        )
-        if "true" in result.stdout:
-            click.echo("  Reacher Docker: running at localhost:8080", err=True)
-        else:
-            click.echo("  Reacher Docker: stopped", err=True)
-            if click.confirm("  Start it?", default=True):
-                subprocess.run(["docker", "start", "suplex-reacher"], capture_output=True)
-                click.echo("  Started!", err=True)
+    plan = rs.plan_local_setup()
+    port_taken = asyncio.run(rs.local_port_taken())
+    click.echo("Email verification checks that a mailbox exists by talking to its mail server.", err=True)
+    click.echo("That check runs in a local service (Reacher) inside Docker.", err=True)
+    if plan.runtime:
+        click.echo(f"{plan.runtime} is installed, but Reacher is not running.\n", err=True)
     else:
-        click.echo("  Reacher Docker: not installed", err=True)
-        if click.confirm("  Pull and start Reacher? (free, ~50MB)", default=True):
-            click.echo("  Pulling reacherhq/backend...", err=True)
-            subprocess.run(
-                ["docker", "run", "-d",
-                 "--name", "suplex-reacher",
-                 "-p", "8080:8080",
-                 "--restart", "unless-stopped",
-                 "reacherhq/backend:latest"],
-            )
-            click.echo("  Reacher running at localhost:8080", err=True)
+        click.echo("Docker is not installed on this machine.\n", err=True)
+
+    can_manage = plan.available and not port_taken
+    if port_taken:
+        click.echo(
+            f"  1. (not available) Port {rs.REACHER_PORT} is used by another program on this machine. "
+            "Free it, or set REACHER_URL to a Reacher running elsewhere.", err=True,
+        )
+    elif plan.available:
+        verb = "Install it for me" if plan.installs_software else "Start it for me"
+        click.echo(f"  1. {verb}", err=True)
+        for command in plan.commands:
+            click.echo(f"       runs: {command}", err=True)
+    else:
+        click.echo("  1. (not available) Suplex only installs Docker through Homebrew on macOS.", err=True)
+    click.echo(f"  2. I'll install Docker myself   {rs.DOCKER_DOCS_URL}", err=True)
+    click.echo("  3. Use a hosted Reacher key instead", err=True)
+    click.echo("  4. Skip verification            emails stay unverified\n", err=True)
+
+    valid = ["1", "2", "3", "4"] if can_manage else ["2", "3", "4"]
+    answer = click.prompt("Choice", type=click.Choice(valid), default="4", show_choices=False, err=True)
+
+    if answer == "1":
+        config.verification_setup = rs.CHOICE_MANAGED
+        config.save()
+        click.echo("Setting up Reacher. This can take a few minutes the first time...", err=True)
+        if asyncio.run(rs.set_up_local_reacher()):
+            click.echo("Email verification is ready.", err=True)
+        else:
+            click.echo("Could not start Reacher. Emails will stay unverified; run `suplex doctor` to retry.", err=True)
+    elif answer == "2":
+        config.verification_setup = rs.CHOICE_MANUAL
+        config.save()
+        click.echo(f"Install Docker from {rs.DOCKER_DOCS_URL}, then run `suplex doctor`.", err=True)
+    elif answer == "3":
+        config.verification_setup = rs.CHOICE_HOSTED
+        config.save()
+        if not config.reacher_api_key:
+            click.echo("Set REACHER_API_KEY, or run `suplex setup` to save a key.", err=True)
+    else:
+        config.verification_setup = rs.CHOICE_SKIP
+        config.save()
+        click.echo("Skipping verification. Run `suplex doctor` to change this.", err=True)
 
 
 @cli.group()
@@ -261,6 +289,8 @@ def scrape_maps(query: str, location: str | None, max_results: int, scraper: str
     token = apify_token or Config.load().apify_token
     store = LeadStore()
     coord = ScrapeCoordinator(store=store, apify_token=token, scraper=scraper, reviews_per_place=reviews)
+    if enrich and not os.environ.get("SUPLEX_NO_ENRICH"):
+        _offer_verification_setup()
     extra: dict = {}
     if only:
         extra["only_states"] = [s.strip().upper() for s in only.split(",")]
@@ -322,6 +352,8 @@ def scrape_linkedin(
     token = apify_token or Config.load().apify_token
     store = LeadStore()
     coord = ScrapeCoordinator(store=store, apify_token=token)
+    if enrich and not os.environ.get("SUPLEX_NO_ENRICH"):
+        _offer_verification_setup()
 
     extra: dict = {"mode": mode}
     if titles:
@@ -457,6 +489,7 @@ def enrich(limit: int, linkedin_posts: int, apify_token: str | None) -> None:
     from suplex.enrich.pipeline import EnrichmentPipeline
 
     token = apify_token or Config.load().apify_token
+    _offer_verification_setup()
 
     async def _run() -> None:
         pipeline = EnrichmentPipeline(
@@ -475,6 +508,8 @@ def enrich(limit: int, linkedin_posts: int, apify_token: str | None) -> None:
 def verify(limit: int) -> None:
     """Verify unverified emails in the database."""
     from suplex.verify.verifier import EmailVerifier
+
+    _offer_verification_setup()
 
     async def _run() -> None:
         store = LeadStore()

@@ -4,7 +4,6 @@ import asyncio
 import json
 import logging
 
-import httpx
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
@@ -74,12 +73,22 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="ensure_reacher",
             description=(
-                "Ensure Reacher email verification is running. "
-                "Checks if Docker is available, pulls the Reacher image if needed, "
-                "and starts the container. Free self-hosted SMTP verification. "
-                "Call this before verify_emails if setup_status shows no reacher_api_key."
+                "Turn on email verification by running a local Reacher service in Docker. "
+                "This runs commands on the user's machine and may install software, so it never "
+                "acts on its own: the first call returns status needs_user_approval with the exact "
+                "commands. Show them to the user and call again with user_approved=true only after "
+                "the user agrees. Without Reacher, emails are only syntax-checked."
             ),
-            inputSchema={"type": "object", "properties": {}},
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "user_approved": {
+                        "type": "boolean",
+                        "description": "True only after the user has seen the commands and agreed.",
+                        "default": False,
+                    },
+                },
+            },
         ),
         Tool(
             name="set_profile",
@@ -807,7 +816,7 @@ async def _dispatch(name: str, args: dict) -> dict | list:
         return await configure_key(args["key"], args["value"])
 
     elif name == "ensure_reacher":
-        return await _ensure_reacher_docker()
+        return await _ensure_reacher(bool(args.get("user_approved", False)))
 
     elif name == "set_profile":
         profile = await scrape_sender_profile(args["url"])
@@ -1081,59 +1090,52 @@ async def _dispatch(name: str, args: dict) -> dict | list:
         raise ValueError(f"Unknown tool: {name}")
 
 
-async def _ensure_reacher_docker() -> dict:
-    import shutil
+async def _ensure_reacher(user_approved: bool) -> dict:
+    from suplex.verify import reacher_setup as rs
 
-    if not shutil.which("docker"):
+    config = Config.load()
+    url = rs.local_url(config)
+    if await rs.ping(url):
+        return {"status": "running", "message": f"Reacher is already running at {url}"}
+
+    if await rs.local_port_taken():
         return {
-            "status": "docker_not_found",
-            "message": "Docker is not installed. Ask the user to install Docker Desktop from https://docs.docker.com/get-docker/ then try again.",
+            "status": "port_in_use",
+            "message": (
+                f"Port {rs.REACHER_PORT} is used by another program on this machine, so a local Reacher cannot "
+                "start. Ask the user to free it, set REACHER_URL, or configure a hosted Reacher key."
+            ),
         }
 
-    proc = await asyncio.create_subprocess_exec(
-        "docker", "inspect", "-f", "{{.State.Running}}", "suplex-reacher",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, _ = await proc.communicate()
+    plan = rs.plan_local_setup()
+    if not plan.available:
+        return {
+            "status": "manual_install_required",
+            "message": (
+                "Docker is not installed and Suplex cannot install it on this machine. Ask the user to "
+                f"install Docker ({rs.DOCKER_DOCS_URL}) or to configure a hosted Reacher key, then call this again."
+            ),
+        }
 
-    if proc.returncode == 0 and b"true" in stdout:
-        return {"status": "running", "message": "Reacher is already running at localhost:8080"}
+    if not user_approved:
+        return {
+            "status": "needs_user_approval",
+            "installs_software": plan.installs_software,
+            "commands": plan.commands,
+            "message": (
+                "Ask the user whether Suplex may run these commands on their machine. "
+                "Call ensure_reacher again with user_approved=true only after they agree."
+            ),
+        }
 
-    if proc.returncode == 0:
-        proc = await asyncio.create_subprocess_exec(
-            "docker", "start", "suplex-reacher",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        await proc.wait()
-        return {"status": "started", "message": "Reacher container restarted at localhost:8080"}
-
-    proc = await asyncio.create_subprocess_exec(
-        "docker", "run", "-d",
-        "--name", "suplex-reacher",
-        "-p", "8080:8080",
-        "--restart", "unless-stopped",
-        "reacherhq/backend:latest",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    _, stderr = await proc.communicate()
-
-    if proc.returncode != 0:
-        return {"status": "error", "message": f"Docker run failed: {stderr.decode()}"}
-
-    for _ in range(15):
-        try:
-            async with httpx.AsyncClient(timeout=2) as client:
-                resp = await client.get("http://localhost:8080")
-                if resp.status_code in (200, 404):
-                    return {"status": "created", "message": "Reacher pulled and running at localhost:8080"}
-        except httpx.ConnectError:
-            pass
-        await asyncio.sleep(1)
-
-    return {"status": "started_slow", "message": "Reacher container started but still warming up. Try verify_emails in a few seconds."}
+    config.verification_setup = rs.CHOICE_MANAGED
+    config.save()
+    if await rs.set_up_local_reacher():
+        return {"status": "running", "message": f"Reacher is running at {rs.REACHER_LOCAL_URL}"}
+    return {
+        "status": "error",
+        "message": "Could not start Reacher. Check that Docker is running, then call this again.",
+    }
 
 
 async def run_server() -> None:

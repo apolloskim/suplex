@@ -947,6 +947,7 @@ def _launch(job_id: str, cmd: list[str], env: dict, log_path: Path, meta: dict) 
         with open(log_path, "w") as log_file:
             proc = subprocess.Popen(
                 cmd,
+                stdin=subprocess.DEVNULL,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,

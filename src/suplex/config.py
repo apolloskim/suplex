@@ -28,6 +28,7 @@ class Config:
     reacher_api_key: str = ""
     reacher_url: str = ""
     million_verifier_api_key: str = ""
+    verification_setup: str = ""
 
     def is_configured(self, key: str) -> bool:
         return bool(getattr(self, key, ""))

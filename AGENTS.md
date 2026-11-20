@@ -69,6 +69,7 @@ suplex serve          # MCP server over stdio
 - Scraping enriches afterwards by default; `--no-enrich` skips it.
 - A lead's scraped fields are in `raw_data`; enrichment results are in `enrichment_data`.
 - LinkedIn emails arrive already verified by the Apify actor and are not re-verified.
+- Email verification needs Reacher in Docker or a hosted Reacher key. Suplex never installs or starts Docker on its own: `ensure_reacher` returns the commands first, and you call it with `user_approved=true` only after the user agrees.
 - LinkedIn posts are fetched only for leads that have an email.
 - For several queries or sources use `run_batch_job`; a watchdog starts queued jobs as slots open.
 - `resume_job` continues a killed, failed or `done_with_errors` job: finished tiles are skipped, failed tiles retried.
@@ -92,7 +93,7 @@ suplex serve          # MCP server over stdio
 - `scraper.coordinator` expands a target into tiles (`geo.tiles`), runs them with concurrency limits and records each tile in `item_tasks`.
 - Google Maps runs through a local Playwright browser (`scraper.gmaps_scraper`) or an Apify actor (`scraper.apify_scraper`), chosen by `-s`. LinkedIn always runs through Apify (`scraper.linkedin_scraper`).
 - `enrich.pipeline` scrapes the lead's website, finds and verifies an email, and optionally fetches LinkedIn posts.
-- `verify.verifier` checks syntax, then Reacher (local Docker or hosted), then MillionVerifier for catch-all domains.
+- `verify.verifier` checks syntax, then Reacher (local Docker or hosted), then MillionVerifier for catch-all domains. `verify.reacher_setup` is the only code that touches Docker, and only after the choice saved by `suplex doctor`, `suplex setup` or `ensure_reacher`.
 - `jobs` launches each background job as `python -m suplex ...` in its own session and tracks it by pid.
 - `outreach.engine` sends through the Google Workspace CLI (`gws`), one config directory per mailbox.
 - Suplex returns data; the calling agent does the interpretation and writes the emails.

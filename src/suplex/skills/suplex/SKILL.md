@@ -211,7 +211,7 @@ suplex enrich --linkedin-posts 0
 Per lead:
 1. Site scrape (free): business data, `clean_text`, emails, social links
 2. Email from site: use directly, even on catch-all domains
-3. Email verification: Reacher Docker (free, auto-installed). Skipped for LinkedIn.
+3. Email verification: Reacher in Docker, or a hosted Reacher key. Never installed without the user's agreement; if neither is set up, emails are only syntax-checked and the result says so. Skipped for LinkedIn.
 4. Email guessing: businesses use `info@` / `contact@`; people use `first.last@`; blocked on catch-all
 5. LinkedIn posts: only for leads with email
 
@@ -338,7 +338,7 @@ Filters are accent-insensitive: `--only Tokyo` matches `Tōkyō`; `--only Noord-
 | `get_leads` | Query stored leads with filters. |
 | `get_stats` | Counts by source and verification status. |
 | `list_jobs` | Recent jobs. |
-| `ensure_reacher` | Pre-start Docker for Reacher. |
+| `ensure_reacher` | Turn on email verification. First call returns the commands it would run; show them to the user and call again with `user_approved=true` only after they agree. |
 | `get_outreach_playbook` | Read playbook; if none exists, walk user through creating one. |
 | `update_outreach_playbook` | Save updated playbook content. |
 | `list_mailboxes` | List sender mailboxes with today's send count. |
