@@ -1,7 +1,8 @@
-"""Configuration — reads from ~/.config/suplex/config.toml, env vars as fallback."""
+"""Configuration — reads from ~/.config/suplex/config.toml, env vars override."""
 
 from __future__ import annotations
 
+import json
 import os
 import tomllib
 from dataclasses import dataclass, fields
@@ -19,6 +20,10 @@ ENV_MAP = {
 }
 
 
+class ConfigError(ValueError):
+    """The config file exists but cannot be used."""
+
+
 @dataclass
 class Config:
     apify_token: str = ""
@@ -30,29 +35,36 @@ class Config:
     def is_configured(self, key: str) -> bool:
         return bool(getattr(self, key, ""))
 
-    def missing_keys(self) -> list[str]:
-        # Only required keys.
-        required = ["apify_token", "anthropic_api_key"]
-        return [k for k in required if not self.is_configured(k)]
-
     def save(self) -> None:
+        """Write the config file, readable by the current user only (it holds API keys)."""
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        lines = ["# Suplex configuration\n"]
+        lines = ["# Suplex configuration"]
         for f in fields(self):
             val = getattr(self, f.name)
             if val:
-                lines.append(f'{f.name} = "{val}"')
-        CONFIG_PATH.write_text("\n".join(lines) + "\n")
+                # A JSON string literal is also a valid TOML basic string, so
+                # quotes and backslashes in a value cannot corrupt the file.
+                lines.append(f"{f.name} = {json.dumps(val)}")
+
+        fd = os.open(CONFIG_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write("\n".join(lines) + "\n")
+        # os.open only applies the mode to new files; tighten ones written by older versions.
+        os.chmod(CONFIG_PATH, 0o600)
 
     @classmethod
     def load(cls) -> Config:
         """Load config from file, then overlay env vars."""
         data: dict[str, str] = {}
 
-        # Read from file if exists.
         if CONFIG_PATH.exists():
-            with open(CONFIG_PATH, "rb") as f:
-                data = tomllib.load(f)
+            try:
+                with open(CONFIG_PATH, "rb") as f:
+                    data = tomllib.load(f)
+            except tomllib.TOMLDecodeError as exc:
+                raise ConfigError(
+                    f"{CONFIG_PATH} is not valid TOML ({exc}). Fix or delete it, then run `suplex setup`."
+                ) from exc
 
         # Env vars override file values.
         for field_name, env_name in ENV_MAP.items():
@@ -60,4 +72,5 @@ class Config:
             if env_val:
                 data[field_name] = env_val
 
-        return cls(**{k: v for k, v in data.items() if k in {f.name for f in fields(cls)}})
+        known = {f.name for f in fields(cls)}
+        return cls(**{k: str(v) for k, v in data.items() if k in known})

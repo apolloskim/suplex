@@ -41,6 +41,8 @@ class EmailVerifier:
         config = Config.load()
         self.reacher_api_key = reacher_api_key or config.reacher_api_key
         self.million_verifier_key = million_verifier_key or config.million_verifier_api_key
+        # REACHER_URL / reacher_url points at a self-managed Reacher instance.
+        self._local_url = (config.reacher_url or REACHER_LOCAL_URL).rstrip("/")
         self._reacher_url: str | None = None
         self._reacher_headers: dict[str, str] = {}
         self._setup_attempted = False
@@ -56,8 +58,8 @@ class EmailVerifier:
         self._setup_attempted = True
 
         # 1. Already running?
-        if await self._ping(REACHER_LOCAL_URL):
-            self._reacher_url = REACHER_LOCAL_URL
+        if await self._ping(self._local_url):
+            self._reacher_url = self._local_url
             self.setup_log.append("Email verification ready.")
             return True
 
@@ -180,9 +182,6 @@ class EmailVerifier:
             status=VerificationStatus.UNKNOWN,
             reason="no_reacher — syntax valid but SMTP unchecked",
         )
-
-    async def verify_batch(self, emails: list[str]) -> list[VerificationResult]:
-        return [await self.verify(email) for email in emails]
 
     @staticmethod
     def _check_syntax(email: str) -> VerificationResult:
