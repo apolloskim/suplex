@@ -26,6 +26,7 @@ import trafilatura
 from selectolax.lexbor import LexborHTMLParser
 
 from suplex.models import Lead, LeadSource, ScrapeTarget
+from suplex.urls import normalize_url, strip_www
 
 logger = logging.getLogger(__name__)
 
@@ -192,16 +193,20 @@ class SiteScraper:
     """Two-tier site scraper: fast HTTP first, Playwright fallback for JS shells."""
 
     async def scrape(self, target: ScrapeTarget) -> list[Lead]:
-        url = target.query
+        url = normalize_url(target.query)
         logger.info("Scraping site: %s", url)
 
         # Tier 1: Fast HTTP.
         site_data, raw_html = await self._scrape_fast(url)
 
-        # Smart fallback: detect JS shell.
+        # Smart fallback: detect JS shell. If the browser tier fails (Chromium not
+        # installed, navigation timeout), keep what the HTTP tier already found.
         if needs_js_rendering(raw_html):
             logger.info("JS shell detected — falling back to Playwright for %s", url)
-            site_data, _ = await self._scrape_playwright(url)
+            try:
+                site_data, _ = await self._scrape_playwright(url)
+            except Exception as exc:
+                logger.warning("Playwright fallback failed for %s (%s) — using static HTML only", url, exc)
 
         # Discover and scrape high-value internal pages.
         internal_urls = self._find_high_value_urls(site_data)
@@ -388,7 +393,7 @@ class SiteScraper:
         for link in tree.css("a[href]"):
             href = link.attrs.get("href", "")
             try:
-                domain = urlparse(href).netloc.lower().lstrip("www.")
+                domain = strip_www(urlparse(href).netloc)
                 if domain in SOCIAL_DOMAINS:
                     key = domain.split(".")[0]
                     if key not in data.social_links:
@@ -531,77 +536,91 @@ class SiteScraper:
     # JSON-LD parsing
     # ------------------------------------------------------------------
 
+    @classmethod
+    def _parse_json_ld(cls, data: SiteData) -> None:
+        """Pull known fields out of JSON-LD blocks.
+
+        JSON-LD is written by hand and by plugins, so any field can be the
+        wrong type. One bad block must not abort the whole site scrape.
+        """
+        for item in list(data.json_ld):
+            if not isinstance(item, dict):
+                continue
+            try:
+                cls._parse_json_ld_item(data, item)
+            except (AttributeError, TypeError, ValueError):
+                logger.debug("Skipping malformed JSON-LD block on %s", data.url, exc_info=True)
+
     @staticmethod
-    def _parse_json_ld(data: SiteData) -> None:
-        for item in data.json_ld:
-            ld_type = str(item.get("@type", ""))
+    def _parse_json_ld_item(data: SiteData, item: dict[str, Any]) -> None:
+        ld_type = str(item.get("@type", ""))
 
-            # Business identity.
-            if any(t in ld_type for t in ["LocalBusiness", "Organization", "Corporation", "Store",
-                                           "Dentist", "MedicalBusiness", "ProfessionalService"]):
-                data.business_name = data.business_name or item.get("name", "")
-                data.business_type = data.business_type or ld_type
+        # Business identity.
+        if any(t in ld_type for t in ["LocalBusiness", "Organization", "Corporation", "Store",
+                                       "Dentist", "MedicalBusiness", "ProfessionalService"]):
+            data.business_name = data.business_name or item.get("name", "")
+            data.business_type = data.business_type or ld_type
 
-                addr = item.get("address", {})
-                if isinstance(addr, dict) and not data.address:
-                    parts = [addr.get("streetAddress", ""), addr.get("addressLocality", ""),
-                             addr.get("addressRegion", ""), addr.get("postalCode", "")]
-                    data.address = ", ".join(p for p in parts if p)
+            addr = item.get("address", {})
+            if isinstance(addr, dict) and not data.address:
+                parts = [addr.get("streetAddress", ""), addr.get("addressLocality", ""),
+                         addr.get("addressRegion", ""), addr.get("postalCode", "")]
+                data.address = ", ".join(p for p in parts if p)
 
-                phone = item.get("telephone", "")
-                if phone and phone not in data.phones:
-                    data.phones.append(phone)
+            phone = item.get("telephone", "")
+            if phone and phone not in data.phones:
+                data.phones.append(phone)
 
-                email = item.get("email", "")
-                if email and email not in data.emails:
-                    data.emails.append(email)
+            email = item.get("email", "")
+            if email and email not in data.emails:
+                data.emails.append(email)
 
-                hours = item.get("openingHoursSpecification", [])
-                if hours and not data.hours:
-                    data.hours = hours if isinstance(hours, list) else [hours]
+            hours = item.get("openingHoursSpecification", [])
+            if hours and not data.hours:
+                data.hours = hours if isinstance(hours, list) else [hours]
 
-                desc = item.get("description", "")
-                if desc and not data.description:
-                    data.description = desc
+            desc = item.get("description", "")
+            if desc and not data.description:
+                data.description = desc
 
-            # Services / products.
-            if any(t in ld_type for t in ["Service", "Product", "Offer"]):
-                name = item.get("name", "")
-                if name and name not in data.services:
-                    data.services.append(name)
+        # Services / products.
+        if any(t in ld_type for t in ["Service", "Product", "Offer"]):
+            name = item.get("name", "")
+            if name and name not in data.services:
+                data.services.append(name)
 
-            # Team / people.
-            if "Person" in ld_type:
-                data.team_members.append({
-                    "name": item.get("name", ""),
-                    "title": item.get("jobTitle", ""),
-                    "email": item.get("email", ""),
+        # Team / people.
+        if "Person" in ld_type:
+            data.team_members.append({
+                "name": item.get("name", ""),
+                "title": item.get("jobTitle", ""),
+                "email": item.get("email", ""),
+            })
+
+        # Reviews.
+        if "Review" in ld_type:
+            data.testimonials.append({
+                "author": item.get("author", {}).get("name", "") if isinstance(item.get("author"), dict) else "",
+                "text": item.get("reviewBody", "")[:500],
+                "rating": item.get("reviewRating", {}).get("ratingValue", "") if isinstance(item.get("reviewRating"), dict) else "",
+            })
+
+        # FAQ.
+        if "FAQPage" in ld_type:
+            for entity in item.get("mainEntity", []):
+                data.faq.append({
+                    "question": entity.get("name", ""),
+                    "answer": entity.get("acceptedAnswer", {}).get("text", "")[:500]
+                              if isinstance(entity.get("acceptedAnswer"), dict) else "",
                 })
 
-            # Reviews.
-            if "Review" in ld_type:
-                data.testimonials.append({
-                    "author": item.get("author", {}).get("name", "") if isinstance(item.get("author"), dict) else "",
-                    "text": item.get("reviewBody", "")[:500],
-                    "rating": item.get("reviewRating", {}).get("ratingValue", "") if isinstance(item.get("reviewRating"), dict) else "",
-                })
-
-            # FAQ.
-            if "FAQPage" in ld_type:
-                for entity in item.get("mainEntity", []):
-                    data.faq.append({
-                        "question": entity.get("name", ""),
-                        "answer": entity.get("acceptedAnswer", {}).get("text", "")[:500]
-                                  if isinstance(entity.get("acceptedAnswer"), dict) else "",
-                    })
-
-            # Blog / article.
-            if any(t in ld_type for t in ["BlogPosting", "Article", "NewsArticle"]):
-                data.blog_posts.append({
-                    "title": item.get("headline", ""),
-                    "date": item.get("datePublished", ""),
-                    "url": item.get("url", ""),
-                })
+        # Blog / article.
+        if any(t in ld_type for t in ["BlogPosting", "Article", "NewsArticle"]):
+            data.blog_posts.append({
+                "title": item.get("headline", ""),
+                "date": item.get("datePublished", ""),
+                "url": item.get("url", ""),
+            })
 
     # ------------------------------------------------------------------
     # Internal page discovery

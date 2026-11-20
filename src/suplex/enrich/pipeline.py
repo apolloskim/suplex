@@ -18,6 +18,7 @@ from typing import Any
 from suplex.models import Lead, LeadSource, ScrapeTarget, VerificationStatus
 from suplex.scraper.site_scraper import SiteScraper
 from suplex.store.db import LeadStore
+from suplex.urls import domain_of
 from suplex.verify.verifier import EmailVerifier
 
 logger = logging.getLogger(__name__)
@@ -148,7 +149,7 @@ class EnrichmentPipeline:
 
         # Step 4: Guess email if still none.
         if not found_email and website:
-            domain = self._extract_domain(website)
+            domain = domain_of(website)
             if domain:
                 guessed = await self._find_email(lead, domain, site_emails)
                 if guessed and lead.id:
@@ -309,14 +310,3 @@ class EnrichmentPipeline:
             if clean:
                 return f"https://{clean}.com"
         return None
-
-    @staticmethod
-    def _extract_domain(url: str) -> str | None:
-        from urllib.parse import urlparse
-        try:
-            parsed = urlparse(url)
-            host = parsed.netloc or parsed.path
-            host = host.lstrip("www.")
-            return host if "." in host else None
-        except Exception:
-            return None
