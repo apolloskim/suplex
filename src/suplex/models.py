@@ -6,6 +6,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from suplex.clock import utcnow
+
 
 class LeadSource(str, Enum):
     GOOGLE_MAPS = "google_maps"
@@ -34,9 +36,12 @@ class Lead(BaseModel):
     website: str | None = None
     source: LeadSource
     raw_data: dict[str, Any] = Field(default_factory=dict)
-    scraped_at: datetime = Field(default_factory=datetime.utcnow)
+    scraped_at: datetime = Field(default_factory=utcnow)
     verification_status: VerificationStatus = VerificationStatus.PENDING
     verified_at: datetime | None = None
+    # Filled in by the enrichment pipeline (website data, email verification, LinkedIn posts).
+    enriched_at: datetime | None = None
+    enrichment_data: dict[str, Any] = Field(default_factory=dict)
 
 
 class ScrapeTarget(BaseModel):

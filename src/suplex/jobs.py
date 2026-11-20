@@ -15,9 +15,9 @@ import subprocess
 import sys
 import time
 import uuid
-from datetime import datetime
 from pathlib import Path
 
+from suplex.clock import utcnow
 from suplex.store.db import LeadStore
 
 logger = logging.getLogger(__name__)
@@ -423,7 +423,7 @@ def _launch_child_job(child: dict) -> None:
     store = LeadStore()
     with store._conn() as conn:
         conn.execute("UPDATE jobs SET status = 'running', started_at = ? WHERE id = ?",
-                     (datetime.utcnow().isoformat(), job_id))
+                     (utcnow().isoformat(), job_id))
 
     if job_type in ("scrape_maps", "scrape_linkedin"):
         source = "maps" if job_type == "scrape_maps" else "linkedin"

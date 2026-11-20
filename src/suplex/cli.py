@@ -551,7 +551,6 @@ def stats() -> None:
 def export(source: str | None, status: str | None, enriched: bool, output: str) -> None:
     """Export leads to CSV."""
     import csv
-    from suplex.models import LeadSource, VerificationStatus
 
     store = LeadStore()
     src = LeadSource(source) if source else None
@@ -559,10 +558,7 @@ def export(source: str | None, status: str | None, enriched: bool, output: str) 
     leads_list = store.get_leads(source=src, verification_status=vs, limit=999999)
 
     if enriched:
-        leads_list = [
-            lead for lead in leads_list
-            if lead.raw_data.get("enrichment_data") or lead.raw_data.get("clean_text")
-        ]
+        leads_list = [lead for lead in leads_list if lead.enriched_at is not None]
 
     if not leads_list:
         click.echo("No leads to export.", err=True)

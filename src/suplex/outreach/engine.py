@@ -36,16 +36,17 @@ def preview_context(campaign_id: str, limit: int = 5, store: LeadStore | None = 
     if not leads:
         return {"error": "No eligible leads for this campaign"}
 
-    # Enrich lead data for the agent.
+    # Decode the JSON columns so the agent gets structured data, not strings.
     enriched_leads = []
     for lead in leads:
         lead_data = dict(lead)
-        # Parse raw_data and enrichment_data for agent context.
-        if lead_data.get("raw_data"):
-            try:
-                lead_data["raw_data"] = json.loads(lead_data["raw_data"]) if isinstance(lead_data["raw_data"], str) else lead_data["raw_data"]
-            except (json.JSONDecodeError, TypeError):
-                pass
+        for column in ("raw_data", "enrichment_data"):
+            value = lead_data.get(column)
+            if isinstance(value, str):
+                try:
+                    lead_data[column] = json.loads(value)
+                except json.JSONDecodeError:
+                    pass
         enriched_leads.append(lead_data)
 
     return {

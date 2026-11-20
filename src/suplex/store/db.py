@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Iterator
 
+from suplex.clock import utcnow
 from suplex.models import Lead, LeadSource, VerificationStatus
 
 DEFAULT_DB_PATH = Path.home() / ".config" / "suplex" / "suplex.db"
@@ -376,7 +377,7 @@ class LeadStore:
         with self._conn() as conn:
             conn.execute(
                 "UPDATE leads SET verification_status = ?, verified_at = ? WHERE id = ?",
-                (status.value, datetime.utcnow().isoformat(), lead_id),
+                (status.value, utcnow().isoformat(), lead_id),
             )
 
     def get_unenriched(self, limit: int = 100) -> list[Lead]:
@@ -391,7 +392,7 @@ class LeadStore:
         with self._conn() as conn:
             conn.execute(
                 "UPDATE leads SET enriched_at = ?, enrichment_data = ? WHERE id = ?",
-                (datetime.utcnow().isoformat(), json.dumps(enrichment_data, default=str), lead_id),
+                (utcnow().isoformat(), json.dumps(enrichment_data, default=str), lead_id),
             )
 
     def update_email(self, lead_id: int, email: str) -> None:
@@ -426,7 +427,7 @@ class LeadStore:
     # ------------------------------------------------------------------
 
     def save_profile(self, website: str, data: dict) -> None:
-        now = datetime.utcnow().isoformat()
+        now = utcnow().isoformat()
         with self._conn() as conn:
             conn.execute(
                 """
@@ -575,7 +576,7 @@ class LeadStore:
                 INSERT OR REPLACE INTO linkedin_locations (query, suggestions, scraped_at)
                 VALUES (?, ?, ?)
                 """,
-                (query, json.dumps(suggestions), datetime.utcnow().isoformat()),
+                (query, json.dumps(suggestions), utcnow().isoformat()),
             )
 
     # ------------------------------------------------------------------
@@ -596,7 +597,7 @@ class LeadStore:
                     status='running', total=CASE WHEN excluded.total > 0 THEN excluded.total ELSE jobs.total END,
                     started_at=excluded.started_at
                 """,
-                (job_id, job_type, total, datetime.utcnow().isoformat(), json.dumps(meta or {})),
+                (job_id, job_type, total, utcnow().isoformat(), json.dumps(meta or {})),
             )
 
     def update_job_progress(self, job_id: str, completed: int, leads_count: int) -> None:
@@ -610,7 +611,7 @@ class LeadStore:
         with self._conn() as conn:
             conn.execute(
                 "UPDATE jobs SET status = ?, finished_at = ?, error = ? WHERE id = ?",
-                (status, datetime.utcnow().isoformat(), error, job_id),
+                (status, utcnow().isoformat(), error, job_id),
             )
 
     def update_job_meta(self, job_id: str, meta: dict) -> None:
@@ -649,7 +650,7 @@ class LeadStore:
 
     def create_batch_job(self, batch_id: str, child_specs: list[dict], meta: dict | None = None) -> None:
         """Create a parent batch job with pending child jobs."""
-        now = datetime.utcnow().isoformat()
+        now = utcnow().isoformat()
         with self._conn() as conn:
             conn.execute(
                 "INSERT INTO jobs (id, type, status, total, started_at, meta) VALUES (?, 'batch', 'running', ?, ?, ?)",
@@ -730,7 +731,7 @@ class LeadStore:
                 conn.execute(
                     """UPDATE item_tasks SET status = 'processing', started_at = ?, attempts = attempts + 1
                        WHERE job_id = ? AND item_key = ?""",
-                    (datetime.utcnow().isoformat(), job_id, row["item_key"]),
+                    (utcnow().isoformat(), job_id, row["item_key"]),
                 )
                 return row["item_key"]
         return None
@@ -739,20 +740,19 @@ class LeadStore:
         with self._conn() as conn:
             conn.execute(
                 "UPDATE item_tasks SET status = 'done', finished_at = ? WHERE job_id = ? AND item_key = ?",
-                (datetime.utcnow().isoformat(), job_id, item_key),
+                (utcnow().isoformat(), job_id, item_key),
             )
 
     def fail_item_task(self, job_id: str, item_key: str, error: str) -> None:
         with self._conn() as conn:
             conn.execute(
                 "UPDATE item_tasks SET status = 'failed', finished_at = ?, error = ? WHERE job_id = ? AND item_key = ?",
-                (datetime.utcnow().isoformat(), error, job_id, item_key),
+                (utcnow().isoformat(), error, job_id, item_key),
             )
 
     def reset_stale_tasks(self, job_id: str, timeout_seconds: int = 300) -> int:
         """Reset items stuck in 'processing' longer than timeout back to 'pending'."""
-        from datetime import timedelta
-        cutoff = (datetime.utcnow() - timedelta(seconds=timeout_seconds)).isoformat()
+        cutoff = (utcnow() - timedelta(seconds=timeout_seconds)).isoformat()
         with self._conn() as conn:
             cur = conn.execute(
                 """UPDATE item_tasks SET status = 'pending'
@@ -1022,7 +1022,7 @@ class LeadStore:
             signal_status="hydrated",
             hydration_status="hydrated",
             next_revisit_at=None,
-            last_hydrated_at=datetime.utcnow().isoformat(),
+            last_hydrated_at=utcnow().isoformat(),
             last_hydration_error=None,
             post_payload_json=payload,
         )
@@ -1041,7 +1041,7 @@ class LeadStore:
         subreddit: str | None = None,
         limit: int = 20,
     ) -> list[dict]:
-        now_iso = now_iso or datetime.utcnow().isoformat()
+        now_iso = now_iso or utcnow().isoformat()
         query = (
             "SELECT * FROM reddit_posts "
             "WHERE signal_status = 'watching' AND next_revisit_at IS NOT NULL AND next_revisit_at <= ?"
@@ -1130,6 +1130,8 @@ class LeadStore:
             scraped_at=datetime.fromisoformat(row["scraped_at"]),
             verification_status=VerificationStatus(row["verification_status"]),
             verified_at=datetime.fromisoformat(row["verified_at"]) if row["verified_at"] else None,
+            enriched_at=datetime.fromisoformat(row["enriched_at"]) if row["enriched_at"] else None,
+            enrichment_data=json.loads(row["enrichment_data"]) if row["enrichment_data"] else {},
         )
 
     # ------------------------------------------------------------------
@@ -1143,7 +1145,7 @@ class LeadStore:
                 "INSERT INTO sender_mailboxes (id, email, display_name, gws_config_dir, daily_limit, created_at) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
                 (mailbox_id, email, display_name, gws_config_dir, daily_limit,
-                 datetime.utcnow().isoformat()),
+                 utcnow().isoformat()),
             )
 
     def list_mailboxes(self, active_only: bool = True) -> list[dict]:
@@ -1176,7 +1178,7 @@ class LeadStore:
                 "physical_address, playbook_override, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (campaign_id, name, json.dumps(filter_json), json.dumps(cadence_json),
                  mailbox_id, physical_address, playbook_override,
-                 datetime.utcnow().isoformat()),
+                 utcnow().isoformat()),
             )
 
     def get_campaign(self, campaign_id: str) -> dict | None:
@@ -1210,14 +1212,14 @@ class LeadStore:
                 "INSERT INTO outreach (id, campaign_id, lead_id, mailbox_id, step, "
                 "subject, body, status, drafted_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'draft', ?)",
                 (outreach_id, campaign_id, lead_id, mailbox_id, step, subject, body,
-                 datetime.utcnow().isoformat()),
+                 utcnow().isoformat()),
             )
 
     def approve_outreach(self, outreach_id: str) -> None:
         with self._conn() as conn:
             conn.execute(
                 "UPDATE outreach SET status = 'approved', approved_at = ? WHERE id = ? AND status = 'draft'",
-                (datetime.utcnow().isoformat(), outreach_id),
+                (utcnow().isoformat(), outreach_id),
             )
 
     def mark_outreach_sent(self, outreach_id: str, gmail_thread_id: str,
@@ -1227,7 +1229,7 @@ class LeadStore:
                 "UPDATE outreach SET status = 'sent', sent_at = ?, gmail_thread_id = ?, "
                 "gmail_message_id = ?, attempt_count = attempt_count + 1 "
                 "WHERE id = ? AND status = 'approved'",
-                (datetime.utcnow().isoformat(), gmail_thread_id, gmail_message_id, outreach_id),
+                (utcnow().isoformat(), gmail_thread_id, gmail_message_id, outreach_id),
             )
 
     def mark_outreach_failed(self, outreach_id: str, error: str) -> None:
@@ -1242,7 +1244,7 @@ class LeadStore:
         with self._conn() as conn:
             conn.execute(
                 "UPDATE outreach SET status = 'replied', replied_at = ? WHERE id = ?",
-                (datetime.utcnow().isoformat(), outreach_id),
+                (utcnow().isoformat(), outreach_id),
             )
 
     def get_outreach_drafts(self, campaign_id: str, limit: int = 20) -> list[dict]:
@@ -1297,7 +1299,7 @@ class LeadStore:
                 continue
             sent_at = datetime.fromisoformat(d["sent_at"])
             due_at = sent_at + timedelta(days=delay)
-            if datetime.utcnow() >= due_at:
+            if utcnow() >= due_at:
                 d["next_step"] = next_step
                 d["due_at"] = due_at.isoformat()
                 due.append(d)
@@ -1335,7 +1337,7 @@ class LeadStore:
             conn.execute(
                 "INSERT OR IGNORE INTO suppression_list (email, reason, source, created_at) "
                 "VALUES (?, ?, ?, ?)",
-                (email, reason, source, datetime.utcnow().isoformat()),
+                (email, reason, source, utcnow().isoformat()),
             )
 
     def get_eligible_leads(self, campaign_id: str, limit: int = 20) -> list[dict]:
@@ -1361,7 +1363,7 @@ class LeadStore:
                 q += " AND l.source = ?"
                 params.append(filters["source"])
             if filters.get("enriched_only"):
-                q += " AND l.raw_data != '{}'"
+                q += " AND l.enriched_at IS NOT NULL"
 
             q += " ORDER BY l.scraped_at DESC LIMIT ?"
             params.append(limit)
