@@ -12,8 +12,8 @@ from suplex.models import Lead, LeadSource, ScrapeTarget
 
 logger = logging.getLogger(__name__)
 
-MAPS_URL = "https://www.google.com/maps/search/{query}"
-MAPS_COORD_URL = "https://www.google.com/maps/search/{query}/@{lat},{lng},{zoom}z"
+MAPS_URL = "https://www.google.com/maps/search/{query}?hl=en"
+MAPS_COORD_URL = "https://www.google.com/maps/search/{query}/@{lat},{lng},{zoom}z?hl=en"
 DEFAULT_ZOOM = 13
 DAILY_LIMIT = 1000
 
@@ -201,7 +201,8 @@ class GMapsScraper:
             else:
                 stale_count = 0
 
-        return list(seen_urls.keys())
+        urls = list(seen_urls.keys())
+        return urls[:target_count] if target_count > 0 else urls
 
     @staticmethod
     async def _extract_place(page: Page, url: str, context=None, max_reviews: int = 5) -> dict[str, Any] | None:
