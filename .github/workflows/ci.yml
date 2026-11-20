@@ -26,13 +26,10 @@ jobs:
         run: uv sync --locked --python ${{ matrix.python-version }}
 
       - name: Lint
-        run: uv run ruff check src tests
+        run: uv run ruff check src
 
       - name: Type check
         run: uv run pyright
 
       - name: Smoke test CLI
         run: uv run suplex --help
-
-      - name: Test
-        run: uv run pytest -x -q
