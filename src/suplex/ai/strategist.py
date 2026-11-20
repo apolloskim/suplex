@@ -38,8 +38,7 @@ Output a JSON object with this exact schema:
 
 Guidelines:
 - For Google Maps: use specific business category + location queries
-- For LinkedIn: use search URLs like "https://www.linkedin.com/search/results/people/?keywords=..."
-  or just keyword queries with title + industry filters
+- For LinkedIn: use keyword queries (boolean AND / OR / NOT are supported), never search URLs
 - For Playwright: use specific company website URLs (about/team/contact pages)
 - Diversify across sources for better coverage
 - Prioritize decision-maker titles: CEO, CTO, VP, Director, Head of, Owner, Founder
@@ -47,10 +46,17 @@ Guidelines:
 """
 
 
+DEFAULT_MODEL = "claude-sonnet-5-5"
+
+
+class StrategistError(RuntimeError):
+    pass
+
+
 class Strategist:
     """Uses Claude to generate scrape plans from business context."""
 
-    def __init__(self, api_key: str | None = None, model: str = "claude-sonnet-4-20250514") -> None:
+    def __init__(self, api_key: str | None = None, model: str = DEFAULT_MODEL) -> None:
         self.client = anthropic.AsyncAnthropic(
             api_key=api_key or os.environ.get("ANTHROPIC_API_KEY", ""),
         )
@@ -83,20 +89,25 @@ decision-makers who would be ideal customers for my product/service.
 
         response = await self.client.messages.create(
             model=self.model,
-            max_tokens=2048,
+            max_tokens=16000,
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_message}],
         )
+        if response.stop_reason == "refusal":
+            raise StrategistError("The model declined to generate a scrape plan for this request")
 
-        text = response.content[0].text
-
-        # Extract JSON from response (handle markdown code blocks).
+        text = "".join(block.text for block in response.content if block.type == "text")
         if "```json" in text:
             text = text.split("```json")[1].split("```")[0]
         elif "```" in text:
             text = text.split("```")[1].split("```")[0]
 
-        data = json.loads(text.strip())
+        try:
+            data = json.loads(text.strip())
+        except json.JSONDecodeError as exc:
+            raise StrategistError(
+                f"The model did not return a JSON plan (stop_reason={response.stop_reason})"
+            ) from exc
 
         targets = [
             ScrapeTarget(

@@ -14,7 +14,6 @@ SERVICES = {
         "signup_url": "https://apify.com/sign-up",
         "key_url": "https://console.apify.com/account/integrations",
         "description": "Scrapes Google Maps and LinkedIn. Free tier: $5/month credits.",
-        "validate": "_validate_apify",
     },
     "anthropic_api_key": {
         "name": "Anthropic (Claude)",
@@ -22,7 +21,6 @@ SERVICES = {
         "signup_url": "https://console.anthropic.com/",
         "key_url": "https://console.anthropic.com/settings/keys",
         "description": "AI strategist that decides what to scrape. Powers the SDR brain.",
-        "validate": "_validate_anthropic",
     },
     "reacher_api_key": {
         "name": "Reacher",
@@ -30,7 +28,6 @@ SERVICES = {
         "signup_url": "https://reacher.email/",
         "key_url": "https://app.reacher.email/dashboard",
         "description": "Email verification via SMTP handshake. Checks if mailboxes actually exist. Optional — without it, verification is syntax + DNS only.",
-        "validate": "_validate_reacher",
     },
     "million_verifier_api_key": {
         "name": "MillionVerifier",
@@ -38,7 +35,6 @@ SERVICES = {
         "signup_url": "https://www.millionverifier.com/",
         "key_url": "https://app.millionverifier.com/api",
         "description": "Catch-all domain detection. Supplements Reacher for domains that accept all emails. Optional.",
-        "validate": "_validate_million_verifier",
     },
 }
 

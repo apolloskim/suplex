@@ -109,12 +109,17 @@ def setup() -> None:
     claude_bin = shutil.which("claude")
     if claude_bin and suplex_bin:
         try:
-            subprocess.run(
+            registered = subprocess.run(
                 [claude_bin, "mcp", "add", "suplex", "--scope", "user", "--", suplex_bin, "serve"],
-                capture_output=True, timeout=10,
+                capture_output=True, text=True, timeout=10,
             )
+        except (OSError, subprocess.TimeoutExpired):
+            registered = None
+        if registered is not None and registered.returncode == 0:
             click.echo("  MCP server registered with Claude Code.", err=True)
-        except Exception:
+        elif registered is not None and "already exists" in (registered.stderr + registered.stdout):
+            click.echo("  MCP server already registered with Claude Code.", err=True)
+        else:
             click.echo("  Could not register MCP server automatically.", err=True)
             click.echo(f"  Run manually: claude mcp add suplex --scope user -- {suplex_bin} serve", err=True)
     else:
@@ -126,16 +131,15 @@ def setup() -> None:
 
     # Step 3: Install Playwright browsers.
     click.echo("Checking Playwright browsers...", err=True)
+    playwright_cmd = [sys.executable, "-m", "playwright", "install", "chromium"]
     try:
-        result = subprocess.run(
-            ["playwright", "install", "chromium"], capture_output=True, timeout=120,
-        )
+        result = subprocess.run(playwright_cmd, capture_output=True, timeout=600)
         if result.returncode == 0:
             click.echo("  Chromium ready.", err=True)
         else:
-            click.echo("  Run: playwright install chromium", err=True)
-    except Exception:
-        click.echo("  Run: playwright install chromium", err=True)
+            click.echo(f"  Run: {' '.join(playwright_cmd)}", err=True)
+    except (OSError, subprocess.TimeoutExpired):
+        click.echo(f"  Run: {' '.join(playwright_cmd)}", err=True)
 
     # Step 4: Configure API keys.
     click.echo("\nConfiguring API keys...", err=True)
@@ -421,22 +425,30 @@ def scrape_website(url: str) -> None:
 @click.option("--apify-token", envvar="APIFY_TOKEN", default=None)
 def plan(domain: str, preferences: str, execute: bool, apify_token: str | None) -> None:
     """AI-generate a scrape plan for your business domain."""
-    from suplex.ai.strategist import Strategist
-    from suplex.scraper.coordinator import ScrapeCoordinator
+    from suplex.ai.strategist import Strategist, StrategistError
+    from suplex.config import Config
+    from suplex.scraper.coordinator import ScrapeConfigError, ScrapeCoordinator
+
+    config = Config.load()
+    if not config.anthropic_api_key:
+        raise click.ClickException("No Anthropic API key configured. Run `suplex setup` or set ANTHROPIC_API_KEY.")
 
     async def _run() -> None:
-        s = Strategist()
+        s = Strategist(api_key=config.anthropic_api_key)
         p = await s.plan(domain=domain, preferences=preferences)
         click.echo(json.dumps(p.model_dump(), default=str, indent=2))
 
         if execute:
             click.echo("\n--- Executing plan ---\n", err=True)
             store = LeadStore()
-            coord = ScrapeCoordinator(store=store, apify_token=apify_token)
+            coord = ScrapeCoordinator(store=store, apify_token=apify_token or config.apify_token)
             leads = await coord.run(p.targets)
             click.echo(json.dumps({"leads_scraped": len(leads)}, indent=2))
 
-    asyncio.run(_run())
+    try:
+        asyncio.run(_run())
+    except (StrategistError, ScrapeConfigError) as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 def _run_scrape(coord: ScrapeCoordinator, target: ScrapeTarget) -> None:
