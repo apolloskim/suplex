@@ -41,7 +41,6 @@ hiddenimports = [
     "suplex.apify_budget",
     "suplex.models",
     "suplex.ai.strategist",
-    "suplex.scheduler.cron",
     # Dependencies that need explicit imports.
     "anyio",
     "anyio._backends._asyncio",
@@ -54,7 +53,6 @@ hiddenimports = [
     "click",
     "pydantic",
     "apify_client",
-    "apscheduler",
     "psutil",
     "email_validator",
 ]

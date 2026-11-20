@@ -31,8 +31,6 @@ dependencies = [
     "mcp[cli]>=1.9",
     # CLI
     "click>=8.1",
-    # Scheduling
-    "apscheduler>=4.0.0a5",
     # Data
     "pydantic>=2.11",
 ]
